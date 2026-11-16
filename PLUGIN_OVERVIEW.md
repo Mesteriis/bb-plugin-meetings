@@ -3,7 +3,7 @@
 - A **Встречи** page in the sidebar: paste a Zoom, Google Meet, Telemost or Jitsi link, watch the bot's screen live, read the transcript as it grows, play the recording, rename speakers, search all meetings, and download md, txt, srt, vtt or json.
 - `meetings_*` agent tools, so an agent can send the bot from a link, report whether it got in, and write a summary with decisions and action items when the meeting ends.
 - A `bb meetings` command for the same work from a terminal, plus `doctor`, `setup` and `selftest`.
-- **Local recording on macOS** (Apple silicon, macOS 14.4+): no bot joins. The plugin notices that Zoom, Teams, Telegram, FaceTime or a browser call started using the microphone and records it locally (mic, and system audio once its permission is granted), then transcribes with a local Whisper large-v3-turbo or GigaAM. Participants get no notice because no bot joins.
+- **Local recording on macOS** (Apple silicon, macOS 14.4+): no bot joins. The plugin notices that Zoom, Teams, Telegram, FaceTime or a browser call (not Safari) started using the microphone and records your microphone and the app's audio locally, then transcribes with a local Whisper large-v3-turbo or GigaAM. Participants get no notice because no bot joins.
 - Optional auto-join for every supported meeting in a Google, Outlook or Yandex calendar (secret ICS address).
 
 ## How it works

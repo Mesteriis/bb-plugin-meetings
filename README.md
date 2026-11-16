@@ -39,7 +39,7 @@ Screenshots show a demo meeting played by the plugin's built-in mock meeting (th
 - **Meeting Q&A.** Ask about one or multiple recordings; API answers cite actual transcript segments and timecodes. Agent mode returns instructions to the connected BB agent instead of pretending it has generated an answer.
 - **MCP, REST and webhooks.** Authenticated external-agent endpoints, rotatable personal tokens and HMAC-signed completion events with the final transcript. See [Notetaker integrations](docs/notetaker.ru.md).
 - **Import.** `bb meetings import <file>` transcribes an existing audio or video recording.
-- **Local recording on macOS.** On a Mac with Apple silicon (macOS 14.4+), no bot joins the call: the plugin detects that Zoom, Teams, Telegram, FaceTime or a browser call is using the microphone and records it locally, then transcribes with a local Whisper large-v3-turbo (default) or GigaAM. Participants get no notice because no bot joins.
+- **Local recording on macOS.** On a Mac with Apple silicon (macOS 14.4+), no bot joins the call: the plugin detects that Zoom, Teams, Telegram, FaceTime or a browser call (not Safari) is using the microphone and records your microphone and the app's audio locally, then transcribes with a local Whisper large-v3-turbo (default) or GigaAM. Participants get no notice because no bot joins.
 
 Full settings, templates, browser accounts and external-agent connection details are under **Настройки** on the Meetings page. [New functions and setup](docs/notetaker.ru.md).
 
@@ -67,7 +67,7 @@ Step-by-step instructions in Russian: [docs/guide.ru.md §8.1](docs/guide.ru.md)
 | Disk | About 15 MB per hour of Opus audio, plus about 115 MB per hour of temporary PCM while a meeting is transcribed |
 | RAM | About 0.5–1 GB per bot (Chrome) and about 250 MB per transcriber |
 
-Transcription is Russian only. Supported meeting platforms are Zoom, Google Meet, Yandex Telemost and Jitsi; on macOS, local recording also covers Teams, Telegram, FaceTime and browser calls. For a self-hosted Jitsi URL pass `--platform jitsi`. Admission still depends on the service and meeting organizer.
+Transcription is Russian only with GigaAM; local recordings on macOS use Whisper by default, which also keeps English terms. Supported meeting platforms are Zoom, Google Meet, Yandex Telemost and Jitsi; on macOS, local recording also covers Teams, Telegram, FaceTime and browser calls. For a self-hosted Jitsi URL pass `--platform jitsi`. Admission still depends on the service and meeting organizer.
 
 **Local recording (macOS)** needs ffmpeg, Xcode command-line tools (`xcode-select --install`) and the BB app's Microphone permission; the Whisper model needs about 1.6 GB of disk and the System Audio Recording permission is requested for the BB app when system audio capture is added.
 

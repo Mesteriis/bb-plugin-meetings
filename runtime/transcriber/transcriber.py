@@ -624,6 +624,40 @@ def merge_short_runs(runs, min_len):
     return runs
 
 
+SOURCE_FRAME_S = 0.1  # resolution of the microphone/system comparison
+SOURCE_SILENCE = 1e-6  # mean square below which a frame belongs to neither side (about -60 dBFS)
+
+
+def source_split_offsets(mic, system, min_piece_s=MIN_SPLIT_PIECE_S):
+    """Sample offsets inside a local-recording segment where the louder side changes
+    between the microphone (the owner) and the system audio (the remote side).
+    Silent frames continue the side before them; a side that holds for less than
+    min_piece_s (an interjection, cross-talk) does not split the segment."""
+    hop = int(SOURCE_FRAME_S * SAMPLE_RATE)
+    frames = min(len(mic), len(system)) // hop
+    if frames < 2:
+        return []
+
+    def energy(x):
+        x = np.asarray(x[:frames * hop], dtype=np.float32).reshape(frames, hop)
+        return (x * x).mean(axis=1)
+
+    em, es = energy(mic), energy(system)
+    runs = []
+    for i in range(frames):
+        if max(em[i], es[i]) < SOURCE_SILENCE:
+            if runs:
+                runs[-1][2] = (i + 1) * hop
+            continue
+        side = "mic" if em[i] >= es[i] else "system"
+        if runs and runs[-1][0] == side:
+            runs[-1][2] = (i + 1) * hop
+        else:
+            runs.append([side, i * hop if runs else 0, (i + 1) * hop])
+    runs = merge_short_runs(runs, int(min_piece_s * SAMPLE_RATE))
+    return [start for _, start, _ in runs[1:]]
+
+
 def ui_split_offsets(timeline, rec_start_ms, start_sample, x):
     """Sample offsets inside x where the dominant UI speaker changes (both sides >= 1.2 s)."""
     n = len(x)
@@ -1500,6 +1534,19 @@ class Transcriber:
         x = data.astype(np.float32) / 32768.0
         return float(np.mean(x * x))
 
+    def _pcm_slice(self, name, start, count):
+        """count samples of a meeting stream from sample start, as floats; zeros where
+        the file is absent or shorter (a stream that was not recorded)."""
+        out = np.zeros(count, dtype=np.float32)
+        path = os.path.join(self.dir, name)
+        if os.path.isfile(path):
+            try:
+                data = np.fromfile(path, dtype=np.int16, offset=start * 2, count=count)
+            except OSError:
+                data = np.zeros(0, dtype=np.int16)
+            out[:data.size] = data.astype(np.float32) / 32768.0
+        return out
+
     def _local_owner_for(self, a, b):
         """The speaker of a local-recording segment: the owner when the microphone
         energy at that position is at least the system audio's, else None (remote,
@@ -1715,7 +1762,10 @@ class Transcriber:
         if self.mode == "live" and self.platform != "local":
             self.timeline.poll()
         offsets = []
-        if self.effective_diarization != "acoustic" and self.platform != "local":
+        if self.platform == "local":
+            offsets = source_split_offsets(self._pcm_slice("mic.pcm", start, len(x)),
+                                           self._pcm_slice("system.pcm", start, len(x)))
+        elif self.effective_diarization != "acoustic":
             offsets = ui_split_offsets(self.timeline, self.rec_start, start, x)
         bounds = [0] + offsets + [len(x)]
         for a, b in zip(bounds, bounds[1:]):
