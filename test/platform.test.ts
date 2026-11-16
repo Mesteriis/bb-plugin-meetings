@@ -1,6 +1,6 @@
 // Platform selection for bot vs local recording (DESIGN §1, §15).
 import { describe, expect, it } from "vitest";
-import { botPlatformProblem, isMacArm64, platformProblem, uvDownload, WHISPER_MODEL } from "../src/host/platform.js";
+import { botPlatformProblem, isMacArm64, platformProblem, transcriberMacosRequirements, transcriberRequirements, uvDownload, venvSpec, WHISPER_MODEL } from "../src/host/platform.js";
 
 describe("uvDownload", () => {
   it("pins the uv 0.13.0 asset for darwin-arm64 with its release sha256", () => {
@@ -27,6 +27,13 @@ describe("platform selection", () => {
     expect(platformProblem("linux", "x64")).toBeNull();
     expect(botPlatformProblem("darwin", "arm64")).toContain("только на Linux");
     expect(botPlatformProblem("linux", "x64")).toBeNull();
+  });
+});
+
+describe("venvSpec", () => {
+  it("keeps the Linux spec byte-identical (no macOS-only hash)", () => {
+    expect(venvSpec(transcriberRequirements(), transcriberMacosRequirements(), "linux", "x64")).toBe("c8a80f5980b71930");
+    expect(venvSpec(transcriberRequirements(), "", "linux", "x64")).toBe("c8a80f5980b71930");
   });
 });
 

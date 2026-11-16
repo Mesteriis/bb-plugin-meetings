@@ -20,7 +20,9 @@ describe("classifyBundleId", () => {
     expect(classifyBundleId("us.zoom.caphost")).toEqual({ appKey: "zoom", label: "Zoom" });
     expect(classifyBundleId("com.microsoft.teams.helper")).toEqual({ appKey: "teams", label: "Microsoft Teams" });
     expect(classifyBundleId("com.google.Chrome.helper.1")).toEqual({ appKey: "browser", label: "Браузер" });
-    expect(classifyBundleId("com.apple.WebKit.GPU")).toEqual({ appKey: "browser", label: "Браузер" });
+    // com.apple.WebKit.* belongs to any app's embedded web view, not only a listed browser,
+    // so it is not classified (ownership cannot be resolved from the helper bundle id).
+    expect(classifyBundleId("com.apple.WebKit.GPU")).toBeNull();
     expect(classifyBundleId("company.thebrowser.browser.helper")).toEqual({ appKey: "browser", label: "Браузер" });
   });
 

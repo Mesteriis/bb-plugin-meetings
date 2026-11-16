@@ -18,7 +18,7 @@ export interface LocalPollOptions {
   readonly startThresholdMs: number;
   readonly graceMs: number;
   /** Enabled appKeys; empty = all supported sources. */
-  readonly apps: readonly string[];
+  readonly apps: readonly string[] | null;
 }
 
 export interface LocalPollResult {
@@ -36,8 +36,8 @@ export function resetLocalDetection(): void {
   detectionState = null;
 }
 
-function filterApps(apps: readonly { appKey: string; label: string }[], enabled: ReadonlySet<string>): { appKey: string; label: string }[] {
-  if (enabled.size === 0) return apps.slice();
+function filterApps(apps: readonly { appKey: string; label: string }[], enabled: ReadonlySet<string> | null): { appKey: string; label: string }[] {
+  if (enabled === null) return apps.slice();
   return apps.filter((app) => enabled.has(app.appKey));
 }
 
@@ -57,7 +57,7 @@ export async function localPoll(paths: HostPaths, options: LocalPollOptions): Pr
   } catch {
     return { ...empty, supported: true, error: "capture detect вернул не JSON" };
   }
-  const enabled = new Set(options.apps);
+  const enabled = options.apps === null ? null : new Set(options.apps);
   const sources = filterApps(activeSources(processes), enabled);
   detectionState ??= createDetectionState();
   const { state, events } = stepDetection(detectionState, sources, Date.now(), {
@@ -152,6 +152,9 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
   const bundles = localSourceBundles(input.appKey);
   const args = ["record", "--meeting-dir", dir];
   if (bundles.length > 0) args.push("--bundle-ids", bundles.join(","));
+  // Write the initial state BEFORE spawning so the helper's own fast-failure
+  // state (e.g. a denied microphone) is never overwritten by the host.
+  await writeJsonAtomic(path.join(dir, F.state), initialState(input.meetingId, 0));
   const pid = await spawnDetached({
     command: paths.capture,
     args,
@@ -159,7 +162,6 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
     logFile: path.join(dir, F.botLog),
     env: childEnv(paths),
   });
-  await writeJsonAtomic(path.join(dir, F.state), initialState(input.meetingId, pid));
   await writeJsonAtomic(path.join(dir, F.pids), { bot: { pid, startedAt: now } });
   return snapshot(paths, input.meetingId);
 }

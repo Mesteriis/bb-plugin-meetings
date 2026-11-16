@@ -4,7 +4,7 @@
 // embedded runtime files, playwright-core (verified npm tarball), uv (pinned,
 // sha256-checked), a Python venv with sherpa-onnx, and the sherpa-onnx models.
 // One run per data dir at a time; progress goes to setup.json + logs/setup.log.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -479,7 +479,17 @@ async function ensureModel(paths: HostPaths, spec: ModelSpec, force: boolean, co
 /** macOS local recording: write the embedded runtime and compile the Swift capture helper. */
 async function captureStep(paths: HostPaths, options: SetupOptions, context: StepContext): Promise<string[]> {
   await ensureRuntimeDir(paths, { force: options.force });
-  if (!options.force && (await statOrNull(paths.capture)) !== null) return [];
+  // Key the compiled binary on the embedded source + plist so an updated main.swift is rebuilt.
+  const sourceHash = createHash("sha256")
+    .update(RUNTIME_FILES["capture/main.swift"] ?? "")
+    .update(RUNTIME_FILES["capture/Info.plist"] ?? "")
+    .digest("hex")
+    .slice(0, 16);
+  const marker = paths.capture + ".sha";
+  if (!options.force) {
+    const previous = (await readJson(marker)) as { hash?: unknown } | null;
+    if (previous?.hash === sourceHash && (await statOrNull(paths.capture)) !== null) return [];
+  }
   await context.progress("Компилирую хелпер захвата звука (swiftc)");
   await fs.mkdir(paths.bin, { recursive: true });
   const moduleCache = path.join(paths.cache, "swift-module-cache");
@@ -493,6 +503,7 @@ async function captureStep(paths: HostPaths, options: SetupOptions, context: Ste
     await runChecked(
       "swiftc",
       [
+        "-O",
         "-module-cache-path", moduleCache,
         paths.captureSource,
         "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", plist,
@@ -504,6 +515,7 @@ async function captureStep(paths: HostPaths, options: SetupOptions, context: Ste
   } finally {
     await removeTree(staging);
   }
+  await writeJsonAtomic(marker, { hash: sourceHash, compiledAt: new Date().toISOString() });
   return [];
 }
 

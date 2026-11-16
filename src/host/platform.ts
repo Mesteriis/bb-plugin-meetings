@@ -83,12 +83,13 @@ export function transcriberMacosRequirements(files: Readonly<Record<string, stri
   return files["transcriber/requirements-macos.txt"] ?? FALLBACK_MACOS_REQUIREMENTS;
 }
 
-/** Identity of the venv contents: reinstall packages when it changes. */
-export function venvSpec(requirements: string = transcriberRequirements(), macosRequirements: string = transcriberMacosRequirements()): string {
-  return createHash("sha256")
-    .update(JSON.stringify({ uv: UV_VERSION, python: PYTHON_VERSION, requirements, macosRequirements }))
-    .digest("hex")
-    .slice(0, 16);
+/** Identity of the venv contents: reinstall packages when it changes. The Linux spec is
+ * byte-identical to before local recording (the macOS-only requirements are hashed only on
+ * macOS), so enabling local recording never forces a Linux venv reinstall. */
+export function venvSpec(requirements: string = transcriberRequirements(), macosRequirements: string = transcriberMacosRequirements(), platform: NodeJS.Platform = process.platform, arch: string = process.arch): string {
+  const spec: Record<string, unknown> = { uv: UV_VERSION, python: PYTHON_VERSION, requirements };
+  if (isMacArm64(platform, arch)) spec.macosRequirements = macosRequirements;
+  return createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 16);
 }
 
 export interface ModelSpec {
