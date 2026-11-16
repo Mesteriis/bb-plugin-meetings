@@ -79,6 +79,26 @@ describe("expanded meeting features", () => {
     slot.lifecycle.unmount();
   });
 
+  it("on a Mac host explains that bot accounts are not used instead of offering a sign-in", async () => {
+    const slot = await page("", handlers({
+      "notetaker.settings": () => ({ settings: SETTINGS }),
+      "env.status": () => ({
+        env: {
+          ready: true, items: [], setup: { phase: "idle", message: "", startedAt: null, finishedAt: null, logTail: "" },
+          runtimeHash: "abc", hostDataDir: "/tmp/meetings", platform: "darwin", arch: "arm64", sudo: false,
+          gigaam: { url: null, ready: false, detail: "" }, chromePath: null, inputDevices: [],
+        },
+        error: null,
+      }),
+    }));
+    await settingsTab("Аккаунты");
+    await screen.findByText(/На этом Mac вход не нужен/);
+    expect(screen.getByText(/Dia, Arc, Chrome, Яндекс Браузер, Firefox или Edge/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Войти в/ })).toBeNull();
+    expect(calls(slot, "accounts.status")).toEqual([]);
+    slot.lifecycle.unmount();
+  });
+
   it("copies a built-in template into an editable custom template and sets it as default", async () => {
     let catalog = [...templates];
     const slot = await page("", handlers({
