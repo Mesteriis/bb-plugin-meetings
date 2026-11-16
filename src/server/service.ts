@@ -125,6 +125,8 @@ export class MeetingsService {
   private readonly joinPollMs: number;
   private readonly localPollMs: number;
   private nextDetectionAt = 0;
+  private lastLocalPollError: string | null = null;
+  private lastLocalPollErrorAt = 0;
   readonly zoom: ZoomAccount;
   readonly meet: ZoomAccount;
   readonly telemost: ZoomAccount;
@@ -1099,6 +1101,14 @@ export class MeetingsService {
     } catch (error) {
       this.bb.log.warn(`local.poll failed: ${errorMessage(error)}`);
       return;
+    }
+    if (poll.error !== null) {
+      const now = this.now();
+      if (poll.error !== this.lastLocalPollError || now - this.lastLocalPollErrorAt > 60_000) {
+        this.lastLocalPollError = poll.error;
+        this.lastLocalPollErrorAt = now;
+        this.bb.log.warn(`Local recording detection: ${poll.error}`);
+      }
     }
     if (!poll.supported || poll.error !== null) return;
     let gigaamUrl: string | null = null;
