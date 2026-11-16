@@ -50,9 +50,16 @@ async function uvVersion(paths: HostPaths): Promise<string | null> {
   return /uv (\S+)/.exec(result?.stdout ?? "")?.[1] ?? null;
 }
 
-export async function checkEnv(paths: HostPaths, input: EnvCheckInput): Promise<EnvReport> {
-  if (isMacArm64()) return checkMacEnv(paths, input);
-  const unsupported = platformProblem();
+export interface EnvCheckOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly arch?: string;
+}
+
+export async function checkEnv(paths: HostPaths, input: EnvCheckInput, options: EnvCheckOptions = {}): Promise<EnvReport> {
+  const platform = options.platform ?? process.platform;
+  const arch = options.arch ?? process.arch;
+  if (isMacArm64(platform, arch)) return checkMacEnv(paths, input, platform, arch);
+  const unsupported = platformProblem(platform, arch);
   const [sudo, system, runtime, venv, uv, gigaam, setup, ...models] = await Promise.all([
     probeSudo(),
     probeSystem(input.chromePath),
@@ -228,8 +235,8 @@ export async function checkEnv(paths: HostPaths, input: EnvCheckInput): Promise<
     setup,
     runtimeHash: paths.runtimeHash,
     hostDataDir: paths.root,
-    platform: process.platform,
-    arch: process.arch,
+    platform,
+    arch,
     sudo,
     gigaam,
     chromePath: system.chrome.path,
@@ -237,7 +244,7 @@ export async function checkEnv(paths: HostPaths, input: EnvCheckInput): Promise<
 }
 
 /** macOS Apple silicon: only what local recording needs (no Chrome/Xvfb/PulseAudio/apt). */
-async function checkMacEnv(paths: HostPaths, input: EnvCheckInput): Promise<EnvReport> {
+async function checkMacEnv(paths: HostPaths, input: EnvCheckInput, platform: NodeJS.Platform, arch: string): Promise<EnvReport> {
   const [system, runtime, venv, uv, gigaam, setup, swift, macVersion, ...models] = await Promise.all([
     probeSystem(input.chromePath),
     probeRuntime(paths),
@@ -368,8 +375,8 @@ async function checkMacEnv(paths: HostPaths, input: EnvCheckInput): Promise<EnvR
     setup,
     runtimeHash: paths.runtimeHash,
     hostDataDir: paths.root,
-    platform: process.platform,
-    arch: process.arch,
+    platform,
+    arch,
     sudo: false,
     gigaam,
     chromePath: system.chrome.path,

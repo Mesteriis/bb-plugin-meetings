@@ -39,9 +39,8 @@ async function fakePlaywright(paths: HostPaths): Promise<void> {
 
 describe("env.check", () => {
   it("reports every component; user-level ones are missing in a fresh data dir", { timeout: 60_000 }, async () => {
-    const dataDir = await tempDir();
-    const harness = experimental_createHostEntryHarness(hostEntry, { experimental_paths: { dataDir, tempDir: await tempDir() } });
-    const report = await harness.experimental_call("env.check", { chromePath: "", gigaamUrl: "http://127.0.0.1:9" });
+    const paths = hostPaths(await tempDir());
+    const report = await checkEnv(paths, { chromePath: "", gigaamUrl: "http://127.0.0.1:9" }, { platform: "linux", arch: "x64" });
     expect(envReportSchema.parse(report)).toBeTruthy();
     expect(report.items.map((item) => item.id)).toEqual([
       "chrome", "xvfb", "pulseaudio", "ffmpeg", "xdotool", "node", "runtime", "playwright", "uv", "venv",
@@ -56,18 +55,27 @@ describe("env.check", () => {
     expect(byId.xdotool!.required).toBe(false);
     expect(report.ready).toBe(false);
     expect(report.setup).toMatchObject({ phase: "idle", startedAt: null, logTail: "" });
-    expect(report.hostDataDir).toBe(dataDir);
+    expect(report.hostDataDir).toBe(paths.root);
     expect(report.gigaam).toMatchObject({ url: "http://127.0.0.1:9", ready: false });
-    // This machine has Chrome, Xvfb, PulseAudio and ffmpeg with libopus.
-    expect(byId.chrome).toMatchObject({ ok: true, fix: null });
-    expect(report.chromePath).toBe(byId.chrome!.detail);
-    expect(byId.ffmpeg!.ok).toBe(true);
-    await harness.experimental_dispose();
+    // System binaries (Chrome, Xvfb, PulseAudio, ffmpeg) are machine-specific;
+    // their presence is not asserted here — the Linux item list and the
+    // user-level items are what this test pins.
+  });
+
+  it("lists only what local recording needs on macOS", async () => {
+    const paths = hostPaths(await tempDir());
+    const report = await checkEnv(paths, { chromePath: "", gigaamUrl: "http://127.0.0.1:9" }, { platform: "darwin", arch: "arm64" });
+    expect(report.items.map((item) => item.id)).toEqual([
+      "macos", "swiftc", "capture", "ffmpeg", "uv", "venv", "sherpa-onnx",
+      "vad-model", "speaker-model", "whisper-model", "microphone", "system-audio", "gigaam",
+    ]);
+    expect(report.platform).toBe("darwin");
+    expect(report.arch).toBe("arm64");
   });
 
   it("flags a configured Chrome path that does not exist", async () => {
     const paths = hostPaths(await tempDir());
-    const report = await checkEnv(paths, { chromePath: "/nonexistent/chrome", gigaamUrl: "http://127.0.0.1:9" });
+    const report = await checkEnv(paths, { chromePath: "/nonexistent/chrome", gigaamUrl: "http://127.0.0.1:9" }, { platform: "linux", arch: "x64" });
     const chrome = report.items.find((item) => item.id === "chrome")!;
     expect(chrome).toMatchObject({ ok: false });
     expect(chrome.fix).toMatch(/chromePath/);

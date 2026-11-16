@@ -33,10 +33,24 @@ export async function readProcMac(pid: number): Promise<ProcInfo | null> {
 }
 
 export async function listProcsMac(): Promise<ProcInfo[]> {
-  const ps = await run("ps", ["-axo", "pid=", "-o", "pgid=", "-o", "state=", "-o", "tty=", "-o", "command="], {
-    timeoutMs: PS_TIMEOUT_MS,
-  }).catch(() => null);
+  const [ps, lsof] = await Promise.all([
+    run("ps", ["-axo", "pid=", "-o", "pgid=", "-o", "state=", "-o", "tty=", "-o", "command="], { timeoutMs: PS_TIMEOUT_MS }).catch(() => null),
+    run("lsof", ["-d", "cwd", "-Fpn"], { timeoutMs: PS_TIMEOUT_MS }).catch(() => null),
+  ]);
   if (ps === null || ps.code !== 0) return [];
+  // lsof -d cwd -Fpn: p<pid>, then f<n>, then n<path>, repeated per process.
+  const cwdByPid = new Map<number, string>();
+  if (lsof !== null && lsof.code === 0) {
+    let pid = 0;
+    for (const line of lsof.stdout.split("\n")) {
+      if (line.startsWith("p")) {
+        pid = Number(line.slice(1));
+      } else if (line.startsWith("n") && pid > 0) {
+        cwdByPid.set(pid, line.slice(1));
+        pid = 0;
+      }
+    }
+  }
   const procs: ProcInfo[] = [];
   for (const line of ps.stdout.split("\n")) {
     const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+([\s\S]*)$/.exec(line);
@@ -48,7 +62,7 @@ export async function listProcsMac(): Promise<ProcInfo[]> {
       pgid: Number(match[2]),
       state: (match[3] ?? "?")[0] ?? "?",
       tty: match[4] === "??" || match[4] === "" ? 0 : 1,
-      cwd: null,
+      cwd: cwdByPid.get(pid) ?? null,
       argv: match[5].split(/\s+/).filter((arg) => arg !== ""),
     });
   }

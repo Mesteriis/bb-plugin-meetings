@@ -1,6 +1,7 @@
 // Shared fixtures for the host tests: a temp <hostData> with a fake runtime
 // (a bot runner and a transcriber stub that write the real state files and
 // sleep), config builders, polling, and process cleanup.
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -202,6 +203,14 @@ export function processAlive(pid: number): boolean {
     return false;
   }
   // A zombie still answers kill(0); it is dead for our purposes.
+  if (process.platform === "darwin") {
+    try {
+      const state = execFileSync("ps", ["-p", String(pid), "-o", "state="], { encoding: "utf8" }).trim();
+      return state !== "" && !state.startsWith("Z");
+    } catch {
+      return false;
+    }
+  }
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";

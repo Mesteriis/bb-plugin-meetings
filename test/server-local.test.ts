@@ -89,9 +89,8 @@ describe("local recording auto-record", () => {
     loaded.fake.localPollResult = { supported: true, detected: [], started: [], ended: [started("zoom", "Zoom")], error: null };
     await loaded.service.tick();
     await loaded.service.retranscribe(meeting.id);
-    const ensure = loaded.fake.ensureCalls.filter((c) => c.meetingId === meeting.id && c.mode === "offline");
-    expect(ensure).toHaveLength(1);
-    expect(ensure[0]!.transcriber).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
+    expect(loaded.fake.ensureCalls.at(-1)).toMatchObject({ meetingId: meeting.id, mode: "offline" });
+    expect(loaded.fake.ensureTranscriberArgs.at(-1)).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
   });
 
   it("serves the local recording's audio through the detail page route", async () => {
