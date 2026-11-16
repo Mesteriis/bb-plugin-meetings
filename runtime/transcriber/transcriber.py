@@ -884,21 +884,14 @@ class WhisperAsr:
         self._load()
         if self.stop.is_set():
             raise Stopped()
-        params = {}
-        if self.language:
-            params["language"] = self.language
-        if self.glossary:
-            params["initial_prompt"] = self.glossary
-        import numpy as _np
-        audio = _np.asarray(x, dtype=_np.float32)
+        audio = np.asarray(x, dtype=np.float32)
         with self._lock:
             self.on_status(None)
-            try:
-                result = self._impl.transcribe(audio, path_or_hf_repo=self.repo, **params)
-            except TypeError:
-                # Some mlx-whisper builds do not accept initial_prompt.
-                params.pop("initial_prompt", None)
-                result = self._impl.transcribe(audio, path_or_hf_repo=self.repo, **params)
+            # mlx_whisper.transcribe(audio, *, path_or_hf_repo, ..., initial_prompt, **decode_options);
+            # "language" is a decode option, "initial_prompt" is an explicit keyword.
+            result = self._impl.transcribe(
+                audio, path_or_hf_repo=self.repo, language=self.language, initial_prompt=self.glossary or None
+            )
         text = (result.get("text") if isinstance(result, dict) else "") or ""
         return " ".join(text.split())
 

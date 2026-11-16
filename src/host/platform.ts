@@ -77,7 +77,7 @@ export function transcriberRequirements(files: Readonly<Record<string, string>> 
 }
 
 /** macOS-only ASR packages (MLX: Apple-silicon acceleration). Never installed on Linux. */
-const FALLBACK_MACOS_REQUIREMENTS = "mlx-whisper==0.4.4\nmlx==0.23.3\n";
+const FALLBACK_MACOS_REQUIREMENTS = "mlx-whisper==0.4.3\nmlx==0.32.4\n";
 
 export function transcriberMacosRequirements(files: Readonly<Record<string, string>> = RUNTIME_FILES): string {
   return files["transcriber/requirements-macos.txt"] ?? FALLBACK_MACOS_REQUIREMENTS;
