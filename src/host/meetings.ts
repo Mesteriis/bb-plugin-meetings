@@ -90,10 +90,16 @@ async function readTranscriberState(dir: string): Promise<TranscriberState | nul
   return readJsonAs(file(dir, F.transcriber), transcriberStateSchema);
 }
 
-export async function liveBotPid(dir: string, state?: BotState | null, pids?: PidsFile): Promise<number | null> {
+export async function liveBotPid(dir: string, state?: BotState | null, pids?: PidsFile, scriptName: string = BOT_SCRIPT_NAME): Promise<number | null> {
   const record = pids ?? (await readPids(file(dir, F.pids)));
   const current = state === undefined ? await readState(dir) : state;
-  return findLive([record.bot?.pid, current?.pid], dir, BOT_SCRIPT_NAME);
+  return findLive([record.bot?.pid, current?.pid], dir, scriptName);
+}
+
+/** The recorder process name: the bot runner, or the capture helper for a local recording. */
+async function recorderScriptName(dir: string): Promise<string> {
+  const config = (await readJson(file(dir, F.config))) as { platform?: unknown } | null;
+  return config?.platform === "local" ? "capture" : BOT_SCRIPT_NAME;
 }
 
 async function liveTranscriberPid(dir: string, state?: TranscriberState | null, pids?: PidsFile): Promise<number | null> {
@@ -128,18 +134,19 @@ export async function snapshot(paths: HostPaths, meetingId: string): Promise<Run
   const dir = meetingDir(paths, meetingId);
   if (!(await dirExists(dir))) return emptySnapshot(meetingId);
   const pids = await readPids(file(dir, F.pids));
+  const scriptName = await recorderScriptName(dir);
 
   let state = await readState(dir);
-  let botPid = await liveBotPid(dir, state, pids);
+  let botPid = await liveBotPid(dir, state, pids, scriptName);
   if (botPid !== null && (await stopRequestAge(dir)) > AUTO_STOP_ESCALATION_MS) {
     // Asked to stop long ago and still running: hung (its own timeouts never fired).
     await forceStopBot(paths, meetingId, dir, pids, botPid);
-    botPid = await liveBotPid(dir, state, pids);
+    botPid = await liveBotPid(dir, state, pids, scriptName);
   }
   if (botPid === null) {
     // Dead (or never started) bot: what it left on disk is final now.
     state = await readState(dir);
-    botPid = await liveBotPid(dir, state, pids);
+    botPid = await liveBotPid(dir, state, pids, scriptName);
   }
   if (botPid === null) state = await reconcileDeadBot(paths, meetingId, dir, state, pids);
 
@@ -406,7 +413,7 @@ export async function startMeeting(paths: HostPaths, input: BotConfig): Promise<
       const config = await readJson(file(meetingDir(paths, id), F.config)) as { platform?: string } | null;
       if (config?.platform === parsed.platform) other.push(id);
     }
-    const name = { zoom: "Zoom", meet: "Google Meet", telemost: "Телемост", jitsi: "Jitsi", mock: "mock" }[parsed.platform];
+    const name = { zoom: "Zoom", meet: "Google Meet", telemost: "Телемост", jitsi: "Jitsi", mock: "mock", local: "local" }[parsed.platform];
     if (other.length > 0) throw new Error(`Уже идёт вход в ${name} (${other[0]}); завершите его сначала`);
     if (profileDir !== null) {
       await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
@@ -668,7 +675,7 @@ export async function stopMeeting(paths: HostPaths, meetingId: string): Promise<
 
   const pids = await readPids(file(dir, F.pids));
   const state = await readState(dir);
-  const botPid = await liveBotPid(dir, state, pids);
+  const botPid = await liveBotPid(dir, state, pids, await recorderScriptName(dir));
   if (botPid !== null) {
     if (requestedAt !== null && now - requestedAt > STOP_ESCALATION_MS) await forceStopBot(paths, meetingId, dir, pids, botPid);
     else signalPid(botPid, "SIGTERM");

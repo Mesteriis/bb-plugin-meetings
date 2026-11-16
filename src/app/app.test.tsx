@@ -82,6 +82,8 @@ const READY_ENV: EnvReport = {
   setup: { phase: "idle", message: "", startedAt: null, finishedAt: null, logTail: "" },
   runtimeHash: "abc",
   hostDataDir: "/tmp/meetings",
+  platform: "linux",
+  arch: "x64",
   sudo: true,
   gigaam: { url: "http://127.0.0.1:38271", ready: true, detail: "" },
   chromePath: "/usr/bin/google-chrome-stable",

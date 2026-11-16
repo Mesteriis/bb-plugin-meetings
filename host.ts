@@ -31,6 +31,7 @@ import {
   statusMany,
   stopMeeting,
 } from "./src/host/meetings.js";
+import { localPoll, startLocalMeeting } from "./src/host/local-recording.js";
 import { hostPaths, type HostPaths } from "./src/host/paths.js";
 import { cancelSetups, startSetup } from "./src/host/setup.js";
 import { deleteZoomProfile, zoomProfileStatus } from "./src/host/zoom-profile.js";
@@ -136,6 +137,11 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
   "runtime.list": async (_input, context) => ({
     meetingIds: await listMeetingIds(pathsFor(context.experimental_paths.dataDir)),
   }),
+
+  "local.poll": async ({ startThresholdMs, graceMs, apps }, context) =>
+    localPoll(pathsFor(context.experimental_paths.dataDir), { startThresholdMs, graceMs, apps }),
+
+  "local.start": async (input, context) => startLocalMeeting(pathsFor(context.experimental_paths.dataDir), input),
 };
 
 export default experimental_defineHostEntry({

@@ -205,6 +205,7 @@ export async function probeVenv(paths: HostPaths, options: { readonly timeoutMs?
 
 /** Whether any live process's command line names `dir` or a path inside it. */
 export async function pathInUse(dir: string): Promise<boolean> {
+  if (process.platform === "darwin") return pathInUseMac(dir);
   const entries = await fs.readdir("/proc").catch(() => [] as string[]);
   for (const entry of entries) {
     if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
@@ -212,4 +213,39 @@ export async function pathInUse(dir: string): Promise<boolean> {
     if (cmdline.split("\0").some((arg) => mentionsDir(arg, dir))) return true;
   }
   return false;
+}
+
+/** macOS: any live process's command line names `dir` or a path inside it. */
+async function pathInUseMac(dir: string): Promise<boolean> {
+  const ps = await run("ps", ["-axo", "command="], { timeoutMs: 10_000 }).catch(() => null);
+  if (ps === null || ps.code !== 0) return false;
+  return ps.stdout.split("\n").some((line) => line.trim() !== "" && mentionsDir(line.trim(), dir));
+}
+
+/** The Swift compiler; local recording compiles the capture helper with it. */
+export async function probeSwift(): Promise<BinaryProbe> {
+  return probeBinary("swiftc", ["--version"], /Swift version (\S+)/);
+}
+
+export interface MacVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly detail: string;
+}
+
+function swValue(output: string, key: string): string | null {
+  for (const line of output.split("\n")) {
+    const idx = line.indexOf(key + ":");
+    if (idx === 0) return line.slice((key + ":").length).trim();
+  }
+  return null;
+}
+
+/** The macOS release (sw_vers ProductVersion), or null when not on macOS. */
+export async function probeMacVersion(): Promise<MacVersion | null> {
+  const sw = await run("sw_vers", [], { timeoutMs: 5_000 }).catch(() => null);
+  if (sw === null || sw.code !== 0) return null;
+  const product = swValue(sw.stdout, "ProductVersion") ?? "";
+  const parts = product.split(".");
+  return { major: Number(parts[0] ?? 0), minor: Number(parts[1] ?? 0), detail: product };
 }

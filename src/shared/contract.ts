@@ -65,6 +65,9 @@ export const envReportSchema = z
       .strict(),
     runtimeHash: z.string(),
     hostDataDir: z.string(),
+    /** The recording machine's OS and architecture (e.g. "darwin", "arm64"). */
+    platform: z.string(),
+    arch: z.string(),
     /** Passwordless sudo is available, so setup can install system packages. */
     sudo: z.boolean(),
     gigaam: gigaamStatusSchema,
@@ -290,6 +293,56 @@ export const hostContract = defineRpcContract({
     experimental_description: "Meeting ids that have a directory on this host.",
     input: z.object({}).strict(),
     output: z.object({ meetingIds: z.array(meetingIdSchema) }).strict(),
+  },
+  "local.poll": {
+    experimental_description:
+      "Sample Core Audio for meeting apps holding the microphone and run the detection state machine (macOS local recording).",
+    input: z
+      .object({
+        startThresholdMs: z.number().int().min(1000).max(300_000),
+        graceMs: z.number().int().min(1000).max(3_600_000),
+        /** Enabled appKeys; empty = all supported. */
+        apps: z.array(z.string()).max(64),
+      })
+      .strict(),
+    output: z
+      .object({
+        /** Local recording is supported on this host (darwin-arm64 with a compiled capture helper). */
+        supported: z.boolean(),
+        /** Sources currently holding the microphone (after thresholds, deduped). */
+        detected: z.array(z.object({ appKey: z.string(), label: z.string() }).strict()),
+        /** Sources that crossed the start threshold this sample. */
+        started: z.array(z.object({ appKey: z.string(), label: z.string() }).strict()),
+        /** Sources that crossed the grace period this sample. */
+        ended: z.array(z.object({ appKey: z.string(), label: z.string() }).strict()),
+        error: z.string().nullable(),
+      })
+      .strict(),
+  },
+  "local.start": {
+    experimental_description:
+      "Start a local recording: write the meeting directory and spawn the capture helper (no bot joins).",
+    input: z
+      .object({
+        meetingId: meetingIdSchema,
+        appKey: z.string().min(1).max(64),
+        label: z.string().min(1).max(64),
+        ownerName: z.string().max(64),
+        engine: z.enum(["whisper", "gigaam"]),
+        language: z.string().max(200),
+        glossary: z.string().max(4000),
+        transcriber: z
+          .object({
+            gigaamUrl: z.string().nullable(),
+            diarization: z.enum(["ui+acoustic", "ui", "acoustic"]),
+            speakerLagMs: z.number().int().min(0).max(5000),
+            keepRawAudio: z.boolean(),
+            threads: z.number().int().min(0).max(64),
+          })
+          .strict(),
+      })
+      .strict(),
+    output: runtimeSnapshotSchema,
   },
 });
 export type HostContract = typeof hostContract;

@@ -18,7 +18,7 @@ import { ImportRecording } from "./import-recording";
 
 /** A time this close to now (or in the past minute) means "join now". */
 const NOW_TOLERANCE_MS = 60_000;
-type JoinPlatform = Exclude<Platform, "mock">;
+type JoinPlatform = Exclude<Platform, "mock" | "local">;
 
 export function JoinForm({ nav, onJoined }: { nav: MeetingsNav; onJoined: () => void }) {
   const rpc = useMeetingsRpc();

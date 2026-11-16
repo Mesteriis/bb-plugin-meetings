@@ -1,7 +1,8 @@
 // Pinned toolchain for the plugin-managed runtime: uv (same release and
 // checksums as the gigaam plugin), the transcriber's Python packages, the
-// playwright-core tarball and the sherpa-onnx models. Changing a pin changes
-// the install spec, so existing installs update on the next setup.
+// playwright-core tarball, the sherpa-onnx models, and the local-recording
+// pieces (the Swift capture helper, the local Whisper model). Changing a pin
+// changes the install spec, so existing installs update on the next setup.
 import { createHash } from "node:crypto";
 import { RUNTIME_FILES } from "../generated/runtime-files.js";
 
@@ -23,6 +24,10 @@ const UV_ASSETS: Readonly<Record<string, UvAsset>> = {
     target: "aarch64-unknown-linux-musl",
     sha256: "281ca6cf43f4e26e35474839ad4861be86de42af2682f74134460f5b2071b96d",
   },
+  "darwin-arm64": {
+    target: "aarch64-apple-darwin",
+    sha256: "a9c1b29002cf3c83f07fa9cd8a887a3be0107d90e23189721221e7257db8e3d6",
+  },
 };
 
 export interface UvDownload extends UvAsset {
@@ -39,10 +44,21 @@ export function uvDownload(platform: NodeJS.Platform = process.platform, arch: s
 }
 
 /** Bots need Linux (Xvfb + PulseAudio); x64 and arm64 are supported. */
-export function platformProblem(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string | null {
-  if (platform !== "linux") return `Запись встреч поддерживается только на Linux (сейчас ${platform}-${arch})`;
+export function botPlatformProblem(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string | null {
+  if (platform !== "linux") return `Бот-запись поддерживается только на Linux (сейчас ${platform}-${arch})`;
   if (arch !== "x64" && arch !== "arm64") return `Архитектура ${arch} не поддерживается (нужна x64 или arm64)`;
   return null;
+}
+
+/** macOS on Apple silicon can record locally (no bot joins the call). */
+export function isMacArm64(platform: NodeJS.Platform = process.platform, arch: string = process.arch): boolean {
+  return platform === "darwin" && arch === "arm64";
+}
+
+/** The whole plugin has nothing to do on this platform (not Linux bot, not macOS local). */
+export function platformProblem(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string | null {
+  if (isMacArm64(platform, arch)) return null;
+  return botPlatformProblem(platform, arch);
 }
 
 export const PLAYWRIGHT_CORE = {
@@ -60,16 +76,23 @@ export function transcriberRequirements(files: Readonly<Record<string, string>> 
   return files["transcriber/requirements.txt"] ?? FALLBACK_REQUIREMENTS;
 }
 
+/** macOS-only ASR packages (MLX: Apple-silicon acceleration). Never installed on Linux. */
+const FALLBACK_MACOS_REQUIREMENTS = "mlx-whisper==0.4.4\nmlx==0.23.3\n";
+
+export function transcriberMacosRequirements(files: Readonly<Record<string, string>> = RUNTIME_FILES): string {
+  return files["transcriber/requirements-macos.txt"] ?? FALLBACK_MACOS_REQUIREMENTS;
+}
+
 /** Identity of the venv contents: reinstall packages when it changes. */
-export function venvSpec(requirements: string = transcriberRequirements()): string {
+export function venvSpec(requirements: string = transcriberRequirements(), macosRequirements: string = transcriberMacosRequirements()): string {
   return createHash("sha256")
-    .update(JSON.stringify({ uv: UV_VERSION, python: PYTHON_VERSION, requirements }))
+    .update(JSON.stringify({ uv: UV_VERSION, python: PYTHON_VERSION, requirements, macosRequirements }))
     .digest("hex")
     .slice(0, 16);
 }
 
 export interface ModelSpec {
-  readonly id: "vad-model" | "speaker-model";
+  readonly id: "vad-model" | "speaker-model" | "whisper-model";
   readonly label: string;
   readonly file: string;
   readonly url: string;
@@ -96,6 +119,17 @@ export const MODELS: readonly ModelSpec[] = [
     sha256: "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
   },
 ];
+
+/** The local Whisper model (DESIGN §15): mlx-whisper's large-v3-turbo, fetched on first use. */
+export const WHISPER_MODEL = {
+  repo: "mlx-community/whisper-large-v3-turbo",
+  /** Approximate disk the model weights take after download. */
+  diskBytes: 1_650_000_000,
+} as const;
+
+/** Minimum macOS the capture helper supports (process taps need 14.4+). */
+export const MIN_MACOS_MAJOR = 14;
+export const MIN_MACOS_MINOR = 4;
 
 export const CHROME_DEB_URL = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb";
 export const CHROME_CANDIDATES = ["google-chrome-stable", "google-chrome", "chromium", "chromium-browser"] as const;

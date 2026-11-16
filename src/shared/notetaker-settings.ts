@@ -41,6 +41,17 @@ export const notetakerSettingsPatchSchema = z.object({
   calendarOvertimeMinutes: z.number().int().min(0).max(600),
   calendarFilter: z.string().max(500),
   calendarSyncMinutes: z.number().int().min(1).max(120),
+  /** Local recording (macOS Apple silicon, DESIGN §15). */
+  localRecordingEnabled: z.boolean(),
+  localAutoRecord: z.boolean(),
+  localStartThresholdSec: z.number().int().min(1).max(300),
+  localGraceSec: z.number().int().min(5).max(3600),
+  localOwnerName: z.string().max(64),
+  localEngine: z.enum(["whisper", "gigaam"]),
+  localLanguage: z.string().max(200),
+  localGlossary: z.string().max(4000),
+  /** JSON array of enabled appKeys; empty = all supported apps. */
+  localApps: z.string().max(2000),
 }).partial().strict();
 
 export type NotetakerSettingsPatch = z.infer<typeof notetakerSettingsPatchSchema>;

@@ -9,6 +9,7 @@ import path from "node:path";
 import { run, which } from "./exec.js";
 import { readJson, sleep, writeJsonAtomic } from "./fsutil.js";
 import type { HostPaths } from "./paths.js";
+import { listProcsMac, readProcMac } from "./processes-mac.js";
 
 export interface ProcInfo {
   readonly pid: number;
@@ -24,6 +25,7 @@ export interface ProcInfo {
 
 export async function readProc(pid: number): Promise<ProcInfo | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "darwin") return readProcMac(pid);
   const [stat, cmdline, cwd] = await Promise.all([
     fs.readFile(`/proc/${pid}/stat`, "utf8").catch(() => null),
     fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => null),
@@ -43,6 +45,7 @@ export async function readProc(pid: number): Promise<ProcInfo | null> {
 }
 
 export async function listProcs(): Promise<ProcInfo[]> {
+  if (process.platform === "darwin") return listProcsMac();
   const entries = await fs.readdir("/proc").catch(() => [] as string[]);
   const procs = await Promise.all(
     entries.filter((entry) => /^\d+$/.test(entry)).map((entry) => readProc(Number(entry))),
