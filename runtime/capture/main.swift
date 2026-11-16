@@ -64,15 +64,53 @@ func propertyString(_ object: AudioObjectID, _ selector: AudioObjectPropertySele
   return value?.takeRetainedValue() as String?
 }
 
+func shell(_ args: [String]) -> String {
+  let p = Process()
+  p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  p.arguments = args
+  let pipe = Pipe()
+  p.standardOutput = pipe
+  p.standardError = FileHandle.nullDevice
+  do { try p.run(); p.waitUntilExit() } catch { return "" }
+  return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+}
+
+/// Walk parent pids up to an .app bundle and return its bundle id (C12).
+func owningAppBundleId(_ pid: pid_t) -> String? {
+  var current = pid
+  for _ in 0 ..< 20 {
+    let command = shell(["ps", "-o", "command=", "-p", String(current)]).trimmingCharacters(in: .whitespacesAndNewlines)
+    if let range = command.range(of: ".app/Contents/MacOS/") {
+      let appPath = String(command[..<range.lowerBound]) + ".app"
+      let mdls = shell(["mdls", "-name", "kMDItemCFBundleIdentifier", appPath])
+      if let eq = mdls.range(of: "=") {
+        let value = mdls[eq.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+          .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        if !value.isEmpty && value != "(null)" { return value }
+      }
+    }
+    let ppidText = shell(["ps", "-o", "ppid=", "-p", String(current)]).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let ppid = pid_t(ppidText), ppid > 1, ppid != current else { break }
+    current = ppid
+  }
+  return nil
+}
+
 func runDetect() {
   var rows: [[String: Any]] = []
   for object in processList() {
-    rows.append([
-      "pid": propertyInt(object, kAudioProcessPropertyPID),
-      "bundleId": propertyString(object, kAudioProcessPropertyBundleID) ?? "",
+    let pid = propertyInt(object, kAudioProcessPropertyPID)
+    let bundleId = propertyString(object, kAudioProcessPropertyBundleID) ?? ""
+    var row: [String: Any] = [
+      "pid": pid,
+      "bundleId": bundleId,
       "input": propertyBool(object, kAudioProcessPropertyIsRunningInput),
       "output": propertyBool(object, kAudioProcessPropertyIsRunningOutput),
-    ])
+    ]
+    if bundleId.hasPrefix("com.apple.WebKit"), let owner = owningAppBundleId(pid_t(pid)) {
+      row["owner"] = owner
+    }
+    rows.append(row)
   }
   if let data = try? JSONSerialization.data(withJSONObject: rows, options: []) {
     print(String(data: data, encoding: .utf8) ?? "[]")

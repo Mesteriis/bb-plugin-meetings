@@ -1,6 +1,6 @@
 // Bundle-id mapping for local recording (DESIGN §15). Pure, no I/O.
 import { describe, expect, it } from "vitest";
-import { activeSources, classifyBundleId, localSourceLabel, LOCAL_SOURCE_RULES } from "../src/host/local-sources.js";
+import { activeSources, classifyBundleId, classifyProcess, localSourceLabel, LOCAL_SOURCE_RULES } from "../src/host/local-sources.js";
 
 describe("classifyBundleId", () => {
   it("maps a meeting app by its exact bundle id", () => {
@@ -20,9 +20,11 @@ describe("classifyBundleId", () => {
     expect(classifyBundleId("us.zoom.caphost")).toEqual({ appKey: "zoom", label: "Zoom" });
     expect(classifyBundleId("com.microsoft.teams.helper")).toEqual({ appKey: "teams", label: "Microsoft Teams" });
     expect(classifyBundleId("com.google.Chrome.helper.1")).toEqual({ appKey: "browser", label: "Браузер" });
-    // com.apple.WebKit.* belongs to any app's embedded web view, not only a listed browser,
-    // so it is not classified (ownership cannot be resolved from the helper bundle id).
+    // com.apple.WebKit.* is classified by its owning app, resolved in the capture helper.
     expect(classifyBundleId("com.apple.WebKit.GPU")).toBeNull();
+    expect(classifyProcess({ bundleId: "com.apple.WebKit.GPU", owner: "com.apple.Safari" })).toEqual({ appKey: "browser", label: "Браузер" });
+    expect(classifyProcess({ bundleId: "com.apple.WebKit.GPU", owner: "com.apple.Finder" })).toBeNull();
+    expect(classifyProcess({ bundleId: "com.apple.WebKit.GPU" })).toBeNull();
     expect(classifyBundleId("company.thebrowser.browser.helper")).toEqual({ appKey: "browser", label: "Браузер" });
   });
 
