@@ -328,6 +328,28 @@ func monoFloat(_ data: UnsafePointer<AudioBufferList>) -> [Float] {
   return result
 }
 
+/// Compress audio.pcm (s16le 16 kHz mono) to audio.ogg (Opus 48 kHz mono), like bot mode.
+func compressOgg(_ meetingDir: String) -> Bool {
+  let pcm = meetingDir + "/audio.pcm"
+  let ogg = meetingDir + "/audio.ogg"
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  process.arguments = [
+    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+    "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", pcm,
+    "-ar", "48000", "-ac", "1", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", "-f", "ogg", ogg,
+  ]
+  process.standardOutput = FileHandle.nullDevice
+  process.standardError = FileHandle.nullDevice
+  do {
+    try process.run()
+    process.waitUntilExit()
+  } catch {
+    return false
+  }
+  return process.terminationStatus == 0
+}
+
 /// True when the system stream was expected but recorded nothing but zeros (DESIGN §15).
 func systemStreamIsSilent(peak: Double, bytes: Int, started: Bool) -> Bool {
   return started && bytes > 0 && peak <= 0
@@ -435,6 +457,11 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
   micWriter.close()
   sysWriter.close()
   mixWriter.close()
+
+  // ── compressed copy for playback (audio.ogg, Opus) ─────────────────────
+  if !compressOgg(meetingDir) {
+    appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "warn", "msg": "audio.ogg was not produced (ffmpeg missing or failed); playback unavailable"])
+  }
 
   // ── zero-detection: an all-zero system stream must fail loudly ─────────
   let micPeak = micWriter.peak
