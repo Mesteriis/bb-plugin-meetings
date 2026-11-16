@@ -84,6 +84,8 @@ export interface ServiceOptions {
   readonly now?: () => number;
   /** Poll interval while waiting for a join outcome. */
   readonly joinPollMs?: number;
+  /** Local-recording detection poll interval (ms). */
+  readonly localPollMs?: number;
   readonly fetchText?: (url: string, signal?: AbortSignal) => Promise<string>;
   /** Google OAuth and Calendar API endpoints (tests point them at a fake Google). */
   readonly googleEndpoints?: Partial<GoogleEndpoints>;
@@ -121,6 +123,8 @@ const JOIN_OUTCOMES: ReadonlySet<MeetingStatus> = new Set([
 export class MeetingsService {
   readonly now: () => number;
   private readonly joinPollMs: number;
+  private readonly localPollMs: number;
+  private nextDetectionAt = 0;
   readonly zoom: ZoomAccount;
   readonly meet: ZoomAccount;
   readonly telemost: ZoomAccount;
@@ -155,6 +159,7 @@ export class MeetingsService {
   ) {
     this.now = options.now ?? Date.now;
     this.joinPollMs = options.joinPollMs ?? 2_000;
+    this.localPollMs = options.localPollMs ?? 1_000;
     this.zoom = new ZoomAccount(bb, settings, this);
     this.meet = new ZoomAccount(bb, settings, this, "meet");
     this.telemost = new ZoomAccount(bb, settings, this, "telemost");
@@ -1079,7 +1084,7 @@ export class MeetingsService {
   }
 
   /** Poll local-recording detection on a macOS Apple-silicon primary host (DESIGN §15). */
-  private async pollLocalDetection(signal?: AbortSignal): Promise<void> {
+  async pollLocalDetection(signal?: AbortSignal): Promise<void> {
     const settings = await this.settings.get();
     if (!settings.localRecordingEnabled || !settings.localAutoRecord) return;
     const env = await this.envReport(false).catch(() => null);
@@ -1175,7 +1180,6 @@ export class MeetingsService {
   async tick(signal?: AbortSignal): Promise<number> {
     await this.startDueMeetings(signal);
     await this.reconcileActive(signal);
-    await this.pollLocalDetection(signal);
     let busy = this.repo.countWithStatus([...ACTIVE_STATUSES]) > 0;
     const signingIn = await Promise.all([this.zoom, this.meet, this.telemost].map((account) => account.active(signal))).then((active) => active.some(Boolean)).catch((error: unknown) => {
       this.bb.log.warn(`Zoom sign-in session check failed: ${errorMessage(error)}`);
@@ -1208,6 +1212,16 @@ export class MeetingsService {
       try {
         delay = await this.tick(signal);
         this.lastTickProblem = null;
+        // Detection runs on its own ~1 s cadence, not the 15 s idle tick, so a 5 s
+        // hold is acted on within about a second (DESIGN §15, C1).
+        const now = this.now();
+        if (now >= this.nextDetectionAt) {
+          this.nextDetectionAt = now + this.localPollMs;
+          await this.pollLocalDetection(signal);
+          delay = Math.min(delay, this.localPollMs);
+        } else {
+          delay = Math.min(delay, Math.max(0, this.nextDetectionAt - now));
+        }
       } catch (error) {
         if (signal.aborted) break;
         const problem = errorMessage(error);

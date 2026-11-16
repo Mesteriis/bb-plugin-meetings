@@ -1,6 +1,6 @@
 // Local recording auto-start (DESIGN §15): the scheduler polls detection on a
 // macOS primary host and starts/stops one local meeting per source app.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { envReport, hostCalls, load } from "./server-fixtures.js";
 
 const T0 = Date.UTC(2026, 9, 13, 7, 0, 0);
@@ -30,10 +30,46 @@ function started(appKey: string, label: string) {
 }
 
 describe("local recording auto-record", () => {
+  it("detection on a ~1 s cadence starts exactly one recording by 6 s for a 5 s hold", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { fake, service } = await load({ settings: macSettings() });
+    fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    fake.detectionDriven = true;
+    fake.detectionHeld.add("zoom");
+    for (let t = 1; t <= 6; t += 1) {
+      vi.setSystemTime(start + t * 1000);
+      await service.pollLocalDetection();
+    }
+    const local = service.list("all", 50, null).meetings.filter((m) => m.source === "local");
+    expect(local).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("two 2 s holds 15 s apart start no recording", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { fake, service } = await load({ settings: macSettings() });
+    fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    fake.detectionDriven = true;
+    fake.detectionHeld.add("zoom");
+    for (let t = 1; t <= 17; t += 1) {
+      vi.setSystemTime(start + t * 1000);
+      if (t === 2) fake.detectionHeld.delete("zoom");
+      if (t === 15) fake.detectionHeld.add("zoom");
+      await service.pollLocalDetection();
+    }
+    const local = service.list("all", 50, null).meetings.filter((m) => m.source === "local");
+    expect(local).toHaveLength(0);
+    vi.useRealTimers();
+  });
+
   it("creates exactly one local meeting and starts recording on a detected app", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     const local = service.list("active", 50, null).meetings.filter((m) => m.source === "local");
     expect(local).toHaveLength(1);
     expect(local[0]!.platform).toBe("local");
@@ -45,11 +81,11 @@ describe("local recording auto-record", () => {
   it("stops the recording when the meeting ends", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     const before = service.list("active", 50, null).meetings.filter((m) => m.source === "local")[0]!;
     expect(before.status).toBe("recording");
     fake.localPollResult = { supported: true, detected: [], started: [], ended: [started("zoom", "Zoom")], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     const after = service.list("all", 50, null).meetings.find((m) => m.id === before.id)!;
     expect(["recording", "joining", "starting", "waiting_room", "waiting_for_host"]).not.toContain(after.status);
   });
@@ -57,9 +93,9 @@ describe("local recording auto-record", () => {
   it("a repeated started event for an ongoing local meeting starts no second recording", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     const local = service.list("all", 50, null).meetings.filter((m) => m.source === "local");
     expect(local).toHaveLength(1);
     expect(fake.localStartCalls).toHaveLength(1);
@@ -68,14 +104,14 @@ describe("local recording auto-record", () => {
   it("never polls when local recording is disabled", async () => {
     const { harness, fake, service } = await load({ settings: { ...macSettings(), localRecordingEnabled: false }, now: () => T0 });
     fake.env = envReport({ platform: "darwin", arch: "arm64" });
-    await service.tick();
+    await service.pollLocalDetection();
     expect(hostCalls(harness, "local.poll")).toHaveLength(0);
   });
 
   it("never polls on a non-macOS host", async () => {
     const { harness, fake, service } = await load({ settings: macSettings(), now: () => T0 });
     fake.env = envReport({ platform: "linux", arch: "x64" });
-    await service.tick();
+    await service.pollLocalDetection();
     expect(hostCalls(harness, "local.poll")).toHaveLength(0);
   });
 
@@ -83,11 +119,11 @@ describe("local recording auto-record", () => {
     const loaded = await load({ settings: { ...macSettings(), localGlossary: "термин", localOwnerName: "Я", localLanguage: "ru" }, now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
     loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await loaded.service.tick();
+    await loaded.service.pollLocalDetection();
     expect(loaded.fake.localStartCalls[0]).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
     const meeting = loaded.service.list("all", 50, null).meetings.filter((m) => m.source === "local")[0]!;
     loaded.fake.localPollResult = { supported: true, detected: [], started: [], ended: [started("zoom", "Zoom")], error: null };
-    await loaded.service.tick();
+    await loaded.service.pollLocalDetection();
     await loaded.service.retranscribe(meeting.id);
     expect(loaded.fake.ensureCalls.at(-1)).toMatchObject({ meetingId: meeting.id, mode: "offline" });
     expect(loaded.fake.ensureTranscriberArgs.at(-1)).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
@@ -96,7 +132,7 @@ describe("local recording auto-record", () => {
   it("serves the local recording's audio through the detail page route", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     const meeting = service.list("all", 50, null).meetings.filter((m) => m.source === "local")[0]!;
     expect(meeting.hasAudio).toBe(true);
     // GET /audio?id=… streams audio.ogg through meeting.readFile.
@@ -107,10 +143,10 @@ describe("local recording auto-record", () => {
   it("a host poll error does not stop a running recording", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
-    await service.tick();
+    await service.pollLocalDetection();
     const meeting = service.list("active", 50, null).meetings.filter((m) => m.source === "local")[0]!;
     fake.localPollError = "capture detect failed";
-    await service.tick();
+    await service.pollLocalDetection();
     const after = service.list("all", 50, null).meetings.find((m) => m.id === meeting.id)!;
     expect(after.status).toBe("recording");
   });
