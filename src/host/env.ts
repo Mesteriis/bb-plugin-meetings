@@ -21,6 +21,7 @@ import {
 } from "./platform.js";
 import { probeMacVersion, probeRuntime, probeSudo, probeSwift, probeSystem, probeVenv, type BinaryProbe } from "./probes.js";
 import { run } from "./exec.js";
+import { listInputDevices } from "./local-recording.js";
 import { errorMessage, statOrNull } from "./fsutil.js";
 import { setupSummary } from "./setup-state.js";
 
@@ -390,5 +391,6 @@ async function checkMacEnv(paths: HostPaths, input: EnvCheckInput, platform: Nod
     sudo: false,
     gigaam,
     chromePath: system.chrome.path,
+    inputDevices: await listInputDevices(paths),
   };
 }

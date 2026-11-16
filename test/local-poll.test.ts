@@ -1,6 +1,6 @@
 // The host's detection step over a `capture detect` sample (src/host/local-recording.ts).
 import { beforeEach, describe, expect, it } from "vitest";
-import { resetLocalDetection, stepLocalPoll, type LocalPollOptions } from "../src/host/local-recording.js";
+import { captureArgs, parseInputDevices, resetLocalDetection, stepLocalPoll, type LocalPollOptions } from "../src/host/local-recording.js";
 import type { AudioClientProcess } from "../src/host/local-sources.js";
 
 const options: LocalPollOptions = { startThresholdMs: 5_000, graceMs: 60_000, apps: null, recording: [] };
@@ -46,5 +46,29 @@ describe("stepLocalPoll", () => {
     expect(stepLocalPoll(zoomInCall, recording, 0).started).toEqual([]);
     expect(stepLocalPoll(zoomInCall, recording, 5_000).started).toEqual([]);
     expect(stepLocalPoll(zoomInCall, recording, 30_000)).toMatchObject({ started: [], ended: [] });
+  });
+});
+
+describe("captureArgs", () => {
+  it("passes the app's bundle ids and the chosen microphone to the helper", () => {
+    expect(captureArgs("/data/m1", "zoom", "USB Video Bar")).toEqual([
+      "record", "--meeting-dir", "/data/m1", "--bundle-ids", "us.zoom.xos,us.zoom.", "--input-device", "USB Video Bar",
+    ]);
+  });
+
+  it("leaves the microphone to the helper when none is chosen", () => {
+    expect(captureArgs("/data/m1", "zoom", "  ")).toEqual(["record", "--meeting-dir", "/data/m1", "--bundle-ids", "us.zoom.xos,us.zoom."]);
+  });
+});
+
+describe("parseInputDevices", () => {
+  it("reads the helper's device list and drops duplicates and malformed rows", () => {
+    const stdout = JSON.stringify([{ name: "USB Video Bar", isDefault: false }, { name: "MacBook Pro Microphone", isDefault: true }, { name: "USB Video Bar" }, { id: 3 }, "x"]);
+    expect(parseInputDevices(stdout)).toEqual(["USB Video Bar", "MacBook Pro Microphone"]);
+  });
+
+  it("is empty for output that is not a JSON list", () => {
+    expect(parseInputDevices("usage: capture")).toEqual([]);
+    expect(parseInputDevices("{}")).toEqual([]);
   });
 });

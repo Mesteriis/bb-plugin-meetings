@@ -4,6 +4,7 @@
 // meeting directory.
 //
 //   detect                     print one JSON array of audio client processes
+//   devices                    print one JSON array of input devices (name, isDefault)
 //   record --meeting-dir <dir> [--bundle-ids id,id,...]  record mic + system audio
 //
 // Files: audio.pcm (s16le 16 kHz mono, mic + system mixed, what the transcriber
@@ -460,6 +461,11 @@ final class RecordingStreams {
   }
 }
 
+/// The host time of an IO buffer, or now when the device did not stamp it.
+func bufferHostTime(_ stamp: UnsafePointer<AudioTimeStamp>) -> UInt64 {
+  return stamp.pointee.mFlags.contains(.hostTimeValid) && stamp.pointee.mHostTime != 0 ? stamp.pointee.mHostTime : mach_absolute_time()
+}
+
 /// Mach host time in seconds.
 func hostSeconds(_ hostTime: UInt64) -> Double {
   var info = mach_timebase_info_data_t()
@@ -560,6 +566,9 @@ final class SystemTapConverter {
     input.frameLength = AVAudioFrameCount(frameLength)
     // Copy buffer by buffer: one for interleaved input, one per channel otherwise.
     let target = UnsafeMutableAudioBufferListPointer(input.mutableAudioBufferList)
+    for buffer in target {
+      if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+    }
     for i in 0 ..< min(buffers.count, target.count) {
       guard let from = buffers[i].mData, let to = target[i].mData else { continue }
       memcpy(to, from, min(Int(buffers[i].mDataByteSize), Int(target[i].mDataByteSize)))
@@ -646,7 +655,7 @@ func systemCaptureIssue(_ status: SystemCaptureStatus, final: Bool) -> String? {
   return nil
 }
 
-let MICROPHONE_PERMISSION = "устройство отключено (например, закрыта крышка ноутбука) или BB не разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность"
+let MICROPHONE_PERMISSION = "проверьте, что звук на устройстве не выключен, оно подключено (у ноутбука не закрыта крышка) и BB разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность"
 /// No buffers for this long means the microphone has stopped.
 let MICROPHONE_STALL_S = 10.0
 
@@ -663,9 +672,10 @@ struct MicrophoneStatus {
   var stalledSeconds = 0.0
 }
 
-/// The microphone issue, or nil. A live microphone always carries some noise, so
-/// ten seconds of exact zeros mean the device is dead or macOS is withholding it;
-/// no buffers for ten seconds mean it has gone. Looks at the end of the stream,
+/// The microphone issue, or nil. A live microphone normally carries some noise, so
+/// ten seconds of exact zeros mean it is muted in hardware, dead, or withheld by
+/// macOS; which of these cannot be told from the samples, and the message says so.
+/// No buffers for ten seconds mean the device has gone. Looks at the end of the stream,
 /// so a microphone that worked and then went away is reported.
 func microphoneIssue(_ mic: MicrophoneStatus, final: Bool) -> String? {
   if let failure = mic.failure {
@@ -676,10 +686,10 @@ func microphoneIssue(_ mic: MicrophoneStatus, final: Bool) -> String? {
     return "Микрофон «\(mic.device)» не записан: устройство не выдало данных; \(MICROPHONE_PERMISSION)"
   }
   if mic.stalledSeconds >= MICROPHONE_STALL_S {
-    return "Микрофон «\(mic.device)» перестал выдавать звук \(Int(mic.stalledSeconds)) с назад: устройство отключено?"
+    return "Микрофон «\(mic.device)» перестал выдавать звук \(Int(mic.stalledSeconds)) с назад: \(MICROPHONE_PERMISSION)"
   }
   if mic.trailingZeros >= SILENCE_JUDGE_SAMPLES || (final && mic.peak <= 0) {
-    return "Микрофон «\(mic.device)» выдаёт тишину: \(MICROPHONE_PERMISSION)"
+    return "Микрофон «\(mic.device)» не даёт сигнала: \(MICROPHONE_PERMISSION)"
   }
   return nil
 }
@@ -696,27 +706,56 @@ func inputFormat(_ device: AudioDeviceID) -> AudioStreamBasicDescription? {
   return asbd
 }
 
-/// The input device with this name, or nil.
-func inputDeviceNamed(_ name: String) -> AudioDeviceID? {
+/// Every device that has an input stream.
+func inputDevices() -> [AudioDeviceID] {
   var address = AudioObjectPropertyAddress(
     mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
   var size: UInt32 = 0
   let system = AudioObjectID(kAudioObjectSystemObject)
-  guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return nil }
+  guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
   var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
-  guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return nil }
-  return devices.first { deviceName($0) == name && inputFormat($0) != nil }
+  guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return [] }
+  return devices.filter { inputFormat($0) != nil }
 }
 
-/// When the microphone path must be started again: the meeting app moved to
-/// another input device, the device changed its format (AirPods switching
-/// profile), or buffers stopped arriving (unplugged). Not while a start is
-/// under way, and not more often than every `retryS` seconds.
+/// The input device with this name, or nil.
+func inputDeviceNamed(_ name: String) -> AudioDeviceID? {
+  return inputDevices().first { deviceName($0) == name }
+}
+
+/// `devices`: the microphones the owner can choose from in settings.
+func runDevices() {
+  let systemDefault = defaultInputDevice()
+  let rows: [[String: Any]] = inputDevices().map { ["name": deviceName($0), "isDefault": $0 == systemDefault] }
+  let data = (try? JSONSerialization.data(withJSONObject: rows, options: [])) ?? Data("[]".utf8)
+  print(String(data: data, encoding: .utf8) ?? "[]")
+}
+
+/// When the microphone path must be started again: the device that should be
+/// recorded is another one (chosen in settings, or the meeting app moved), the
+/// device changed its format (AirPods switching profile), or buffers stopped
+/// arriving (unplugged). `wanted` is nil when nothing names a device, as when
+/// the app closes its input while muted: the current device is kept then.
+/// Not while a start is under way, and not sooner than `retryS` after the last one.
 func microphoneNeedsRestart(busy: Bool, sinceStartS: Double, current: AudioDeviceID?, wanted: AudioDeviceID?,
-                            formatChanged: Bool, stalledS: Double, retryS: Double = 5, stallS: Double = 3) -> Bool {
+                            formatChanged: Bool, stalledS: Double, retryS: Double, stallS: Double = 3) -> Bool {
   guard !busy, sinceStartS >= retryS else { return false }
   if let wanted = wanted, wanted != current { return true }
   return formatChanged || stalledS >= stallS
+}
+
+/// Seconds to wait before the next restart after `failures` restarts in a row
+/// that brought no audio: 5, 10, 20, 40, then 60.
+func microphoneRetryDelay(failures: Int) -> Double {
+  return min(60, 5 * pow(2, Double(max(0, failures))))
+}
+
+/// Two stream formats that the same converter can read.
+func sameFormat(_ a: AudioStreamBasicDescription?, _ b: AudioStreamBasicDescription?) -> Bool {
+  guard let a = a, let b = b else { return a == nil && b == nil }
+  return a.mSampleRate == b.mSampleRate && a.mFormatID == b.mFormatID && a.mFormatFlags == b.mFormatFlags
+    && a.mChannelsPerFrame == b.mChannelsPerFrame && a.mBitsPerChannel == b.mBitsPerChannel
+    && a.mBytesPerFrame == b.mBytesPerFrame && a.mBytesPerPacket == b.mBytesPerPacket
 }
 
 /// The microphone path: an IO proc on the input device the meeting app uses,
@@ -738,6 +777,10 @@ final class MicrophoneCapture {
   private var ioProcID: AudioDeviceIOProcID? = nil
   private var busy = false
   private var stopped = false
+  private var missingLogged = false
+  private var failures = 0
+  private var samplesAtRestart = 0
+  private var lastLabel = ""
   private var startedAt = Date()
 
   init(bundleIds: [String], forcedDevice: String?, streams: RecordingStreams, clockStart: Double, events: String) {
@@ -754,13 +797,31 @@ final class MicrophoneCapture {
     return (name, failure)
   }
 
-  /// The device to record: named on the command line, else the meeting app's, else the system default.
-  private func wantedDevice() -> (device: AudioDeviceID, origin: String)? {
-    if let forced = forcedDevice.flatMap(inputDeviceNamed) {
-      return (forced, "named on the command line")
+  /// The device something names: the one chosen in settings (--input-device) when
+  /// it is connected, else the one the meeting app is using; nil when neither.
+  private func namedDevice() -> (device: AudioDeviceID, origin: String)? {
+    if let chosen = forcedDevice {
+      if let device = inputDeviceNamed(chosen) {
+        return (device, "chosen in settings")
+      }
+      // Unplugged or renamed: say so once, and record the app's microphone meanwhile.
+      lock.lock()
+      let first = !missingLogged
+      missingLogged = true
+      lock.unlock()
+      if first {
+        appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "microphone: \(chosen), chosen in settings, is not connected; using the meeting app's"])
+      }
     }
-    guard let picked = pickInputDevice(appDevices: appInputDevices(bundleIds), systemDefault: defaultInputDevice()) else { return nil }
-    return (picked.device, picked.fromApp ? "the device the meeting app uses" : "system default input")
+    if let device = appInputDevices(bundleIds).first(where: { $0 != kAudioObjectUnknown }) {
+      return (device, "the device the meeting app uses")
+    }
+    return nil
+  }
+
+  /// The device to start on: the named one, else the system default input.
+  private func wantedDevice() -> (device: AudioDeviceID, origin: String)? {
+    return namedDevice() ?? defaultInputDevice().map { ($0, "system default input") }
   }
 
   func start() {
@@ -780,24 +841,35 @@ final class MicrophoneCapture {
     }
   }
 
-  /// Called once a second by the recording loop.
-  func tick(stalledSeconds: Double) {
+  /// Called once a second by the recording loop with the samples accepted so far.
+  func tick(stalledSeconds: Double, samples: Int) {
     lock.lock()
-    let (isBusy, current, built, since) = (busy, device, format, Date().timeIntervalSince(startedAt))
+    if samples > samplesAtRestart { failures = 0 }
+    let (isBusy, current, built, since, retry) = (busy, device, format, Date().timeIntervalSince(startedAt), microphoneRetryDelay(failures: failures))
     lock.unlock()
-    let wanted = wantedDevice()?.device
-    let now = current.flatMap(inputFormat)
-    let formatChanged = built != nil && (now?.mSampleRate != built?.mSampleRate || now?.mChannelsPerFrame != built?.mChannelsPerFrame
-                                          || now?.mFormatFlags != built?.mFormatFlags)
-    guard microphoneNeedsRestart(busy: isBusy, sinceStartS: since, current: current, wanted: wanted,
-                                 formatChanged: formatChanged, stalledS: stalledSeconds) else { return }
-    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "microphone: the input changed or stopped; starting it again"])
+    let formatChanged = built != nil && !sameFormat(current.flatMap(inputFormat), built)
+    guard microphoneNeedsRestart(busy: isBusy, sinceStartS: since, current: current, wanted: namedDevice()?.device,
+                                 formatChanged: formatChanged, stalledS: stalledSeconds, retryS: retry) else { return }
+    lock.lock()
+    let first = failures == 0
+    failures += 1
+    samplesAtRestart = samples
+    lock.unlock()
+    // One line when trouble begins; the retries that follow are silent.
+    if first {
+      appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "microphone: the input changed or stopped; starting it again"])
+    }
     start()
   }
 
   private func fail(_ label: String, _ text: String) {
-    lock.lock(); name = label; failure = text; lock.unlock()
-    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "microphone: \(label) did not start: \(text)"])
+    let line = "microphone: \(label) did not start: \(text)"
+    lock.lock()
+    name = label; failure = text
+    let changed = line != lastLabel
+    lastLabel = line
+    lock.unlock()
+    if changed { appendEvent(events, ["t": nowMs(), "level": "warn", "msg": line]) }
   }
 
   private func begin() {
@@ -816,7 +888,7 @@ final class MicrophoneCapture {
     let created = AudioDeviceCreateIOProcIDWithBlock(&procID, chosen, nil) { _, input, inputTime, _, _ in
       let pcm = converter.toInt16(input)
       guard !pcm.isEmpty else { return }
-      streams.append(RecordingStreams.mic, start: Int((hostSeconds(inputTime.pointee.mHostTime) - clockStart) * Double(SAMPLE_RATE)), pcm)
+      streams.append(RecordingStreams.mic, start: Int((hostSeconds(bufferHostTime(inputTime)) - clockStart) * Double(SAMPLE_RATE)), pcm)
     }
     guard created == noErr, let proc = procID else {
       fail(label, CaptureFailure(operation: "AudioDeviceCreateIOProcIDWithBlock", status: created).text)
@@ -828,9 +900,13 @@ final class MicrophoneCapture {
       fail(label, CaptureFailure(operation: "AudioDeviceStart", status: begun).text)
       return
     }
-    lock.lock(); name = label; failure = nil; lock.unlock()
-    appendEvent(events, ["t": nowMs(), "level": "info",
-                         "msg": "microphone: \(label) (\(origin)), \(Int(asbd.mSampleRate)) Hz, \(asbd.mChannelsPerFrame) ch"])
+    let line = "microphone: \(label) (\(origin)), \(Int(asbd.mSampleRate)) Hz, \(asbd.mChannelsPerFrame) ch"
+    lock.lock()
+    name = label; failure = nil
+    let changed = line != lastLabel
+    lastLabel = line
+    lock.unlock()
+    if changed { appendEvent(events, ["t": nowMs(), "level": "info", "msg": line]) }
   }
 
   private func teardown() {
@@ -942,13 +1018,13 @@ func runSelfTest() -> Int32 {
   check("issue-audible", systemCaptureIssue(SystemCaptureStatus(started: true, samples: 160_000, peak: 900, tappedOutput: true), final: true) == nil)
 
   // Microphone issue rules.
-  check("mic-zeros", microphoneIssue(MicrophoneStatus(device: "MacBook Pro Microphone", samples: 160_000, peak: 0, trailingZeros: 160_000), final: false) == "Микрофон «MacBook Pro Microphone» выдаёт тишину: устройство отключено (например, закрыта крышка ноутбука) или BB не разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность")
+  check("mic-zeros", microphoneIssue(MicrophoneStatus(device: "MacBook Pro Microphone", samples: 160_000, peak: 0, trailingZeros: 160_000), final: false) == "Микрофон «MacBook Pro Microphone» не даёт сигнала: проверьте, что звук на устройстве не выключен, оно подключено (у ноутбука не закрыта крышка) и BB разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность")
   check("mic-zeros-too-early", microphoneIssue(MicrophoneStatus(device: "x", samples: 16_000, peak: 0, trailingZeros: 16_000), final: false) == nil)
   check("mic-no-samples-at-end", microphoneIssue(MicrophoneStatus(device: "x"), final: true)?.contains("устройство не выдало данных") == true)
   check("mic-no-samples-after-10s", microphoneIssue(MicrophoneStatus(device: "x", stalledSeconds: 10), final: false)?.contains("устройство не выдало данных") == true)
   check("mic-audible", microphoneIssue(MicrophoneStatus(device: "x", samples: 160_000, peak: 40), final: true) == nil)
-  check("mic-went-silent-after-sound", microphoneIssue(MicrophoneStatus(device: "x", samples: 960_000, peak: 9000, trailingZeros: 160_000), final: false)?.contains("выдаёт тишину") == true)
-  check("mic-stopped-after-sound", microphoneIssue(MicrophoneStatus(device: "AirPods", samples: 960_000, peak: 9000, stalledSeconds: 12), final: false) == "Микрофон «AirPods» перестал выдавать звук 12 с назад: устройство отключено?")
+  check("mic-went-silent-after-sound", microphoneIssue(MicrophoneStatus(device: "x", samples: 960_000, peak: 9000, trailingZeros: 160_000), final: false)?.contains("не даёт сигнала") == true)
+  check("mic-stopped-after-sound", microphoneIssue(MicrophoneStatus(device: "AirPods", samples: 960_000, peak: 9000, stalledSeconds: 12), final: false)?.hasPrefix("Микрофон «AirPods» перестал выдавать звук 12 с назад: проверьте") == true)
   check("mic-start-failure", microphoneIssue(MicrophoneStatus(device: "x", failure: "AudioDeviceStart → -50"), final: false)?.hasPrefix("Микрофон «x» не запустился: AudioDeviceStart → -50") == true)
 
   // One hour of 100 ms buffers from a device whose clock is off: the stream stays
@@ -967,13 +1043,23 @@ func runSelfTest() -> Int32 {
   let trimmed = lead.place(start: 1_600, count: 1_600)
   check("clock-lead-trimmed", trimmed.index == 4_800 && trimmed.skip == 1_600 && lead.position == 4_800)
 
-  // Restarting the microphone: a new app device, a format change or a stall, never while starting.
-  check("mic-restart-steady", !microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: false, stalledS: 0.1))
-  check("mic-restart-app-moved", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 57, formatChanged: false, stalledS: 0.1))
-  check("mic-restart-format", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: true, stalledS: 0.1))
-  check("mic-restart-stalled", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: false, stalledS: 3))
-  check("mic-restart-not-while-starting", !microphoneNeedsRestart(busy: true, sinceStartS: 60, current: nil, wanted: 57, formatChanged: false, stalledS: 30))
-  check("mic-restart-not-too-often", !microphoneNeedsRestart(busy: false, sinceStartS: 4, current: nil, wanted: 57, formatChanged: false, stalledS: 4))
+  // Restarting the microphone: another named device, a format change or a stall; never while starting.
+  check("mic-restart-steady", !microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: false, stalledS: 0.1, retryS: 5))
+  check("mic-restart-other-device", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 57, formatChanged: false, stalledS: 0.1, retryS: 5))
+  check("mic-restart-keeps-device-when-none-named", !microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: nil, formatChanged: false, stalledS: 0.1, retryS: 5))
+  check("mic-restart-format", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: true, stalledS: 0.1, retryS: 5))
+  check("mic-restart-stalled", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: false, stalledS: 3, retryS: 5))
+  check("mic-restart-not-while-starting", !microphoneNeedsRestart(busy: true, sinceStartS: 60, current: nil, wanted: 57, formatChanged: false, stalledS: 30, retryS: 5))
+  check("mic-restart-waits-for-retry", !microphoneNeedsRestart(busy: false, sinceStartS: 19, current: nil, wanted: 57, formatChanged: false, stalledS: 19, retryS: 20))
+  check("mic-retry-backoff", [0, 1, 2, 3, 4, 9].map { microphoneRetryDelay(failures: $0) } == [5, 10, 20, 40, 60, 60])
+  var pcm16 = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM, mFormatFlags: 12, mBytesPerPacket: 4,
+                                          mFramesPerPacket: 1, mBytesPerFrame: 4, mChannelsPerFrame: 2, mBitsPerChannel: 16, mReserved: 0)
+  let before = pcm16
+  check("format-same", sameFormat(before, pcm16))
+  pcm16.mBitsPerChannel = 24
+  pcm16.mBytesPerFrame = 6
+  pcm16.mBytesPerPacket = 6
+  check("format-sample-width-changed", !sameFormat(before, pcm16))
 
   // Microphone choice: the meeting app's device wins over the system default.
   let fromApp = pickInputDevice(appDevices: [91, 57], systemDefault: 57)
@@ -1070,7 +1156,7 @@ final class SystemCapture {
     let created = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregate, nil) { _, input, inputTime, _, _ in
       let pcm = converter.toInt16(input)
       guard !pcm.isEmpty else { return }
-      let start = Int((hostSeconds(inputTime.pointee.mHostTime) - clockStart) * Double(SAMPLE_RATE))
+      let start = Int((hostSeconds(bufferHostTime(inputTime)) - clockStart) * Double(SAMPLE_RATE))
       streams.append(RecordingStreams.system, start: start, pcm)
     }
     guard created == noErr, let proc = procID else {
@@ -1191,7 +1277,8 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
       appAppeared = true
       appendEvent(events, ["t": nowMs(), "level": "info", "msg": "the meeting app started playing; this recording keeps capturing all system audio"])
     }
-    microphone.tick(stalledSeconds: microphoneStatus().stalledSeconds)
+    let micNow = microphoneStatus()
+    microphone.tick(stalledSeconds: micNow.stalledSeconds, samples: micNow.samples)
     refreshIssue(final: false)
     writeState("in_meeting")
   }
@@ -1232,6 +1319,8 @@ if arguments.count >= 2 && arguments[1] == "selftest" {
   exit(runSelfTest())
 } else if arguments.count >= 2 && arguments[1] == "detect" {
   runDetect()
+} else if arguments.count >= 2 && arguments[1] == "devices" {
+  runDevices()
 } else if arguments.count >= 2 && arguments[1] == "record" {
   var meetingDir = FileManager.default.currentDirectoryPath
   var bundleIds: [String] = []
@@ -1241,13 +1330,13 @@ if arguments.count >= 2 && arguments[1] == "selftest" {
   if let index = arguments.firstIndex(of: "--bundle-ids"), index + 1 < arguments.count {
     bundleIds = arguments[index + 1].split(separator: ",").map { String($0) }
   }
-  // Diagnostics: record from the input device with this name instead of the app's.
+  // The microphone chosen in settings; without it the meeting app's device is recorded.
   var inputDevice: String? = nil
   if let index = arguments.firstIndex(of: "--input-device"), index + 1 < arguments.count {
     inputDevice = arguments[index + 1]
   }
   runRecord(meetingDir, bundleIds, inputDevice: inputDevice)
 } else {
-  FileHandle.standardError.write(("usage: capture detect | selftest | record --meeting-dir <dir> [--bundle-ids ids] [--input-device name]" + NL).data(using: .utf8)!)
+  FileHandle.standardError.write(("usage: capture detect | devices | selftest | record --meeting-dir <dir> [--bundle-ids ids] [--input-device name]" + NL).data(using: .utf8)!)
   exit(2)
 }

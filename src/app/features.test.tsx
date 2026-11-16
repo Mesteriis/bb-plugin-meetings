@@ -52,6 +52,33 @@ describe("expanded meeting features", () => {
     slot.lifecycle.unmount();
   });
 
+  it("offers the connected microphones for local recording and saves the chosen one", async () => {
+    const slot = await page("", handlers({
+      "notetaker.settings": (input: { patch?: Record<string, unknown> }) => ({ settings: { ...SETTINGS, localRecordingEnabled: true, localMicrophone: "Old Headset", ...input.patch } }),
+      "env.status": () => ({
+        env: {
+          ready: true, items: [], setup: { phase: "idle", message: "", startedAt: null, finishedAt: null, logTail: "" },
+          runtimeHash: "abc", hostDataDir: "/tmp/meetings", platform: "darwin", arch: "arm64", sudo: false,
+          gigaam: { url: null, ready: false, detail: "" }, chromePath: null,
+          inputDevices: ["USB Video Bar", "MacBook Pro Microphone"],
+        },
+        error: null,
+      }),
+    }));
+    await settingsTab("Запись");
+    const select = await screen.findByRole("combobox", { name: "Микрофон" }) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "USB Video Bar" });
+    expect(Array.from(select.options, option => option.textContent)).toEqual([
+      "Тот же, что у приложения встречи", "USB Video Bar", "MacBook Pro Microphone", "Old Headset (не подключён)",
+    ]);
+    expect(select.value).toBe("Old Headset");
+    fireEvent.change(select, { target: { value: "USB Video Bar" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить настройки" }));
+    await screen.findByText("Сохранено");
+    expect(calls(slot, "notetaker.settings")).toEqual([{}, { patch: { localMicrophone: "USB Video Bar" } }]);
+    slot.lifecycle.unmount();
+  });
+
   it("copies a built-in template into an editable custom template and sets it as default", async () => {
     let catalog = [...templates];
     const slot = await page("", handlers({

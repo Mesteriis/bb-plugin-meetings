@@ -85,11 +85,46 @@ export function stepLocalPoll(processes: readonly AudioClientProcess[], options:
   };
 }
 
+/** The capture helper's `record` arguments for a meeting of this source. */
+export function captureArgs(dir: string, appKey: string, inputDevice: string): string[] {
+  const args = ["record", "--meeting-dir", dir];
+  const bundles = localSourceBundles(appKey);
+  if (bundles.length > 0) args.push("--bundle-ids", bundles.join(","));
+  if (inputDevice.trim() !== "") args.push("--input-device", inputDevice.trim());
+  return args;
+}
+
+/** Device names from `capture devices` output, in its order, without duplicates. */
+export function parseInputDevices(stdout: string): string[] {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(rows)) return [];
+  const names: string[] = [];
+  for (const row of rows) {
+    const name = typeof row === "object" && row !== null ? (row as { name?: unknown }).name : undefined;
+    if (typeof name === "string" && name !== "" && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/** The microphones the owner can choose from; empty when the helper is missing or fails. */
+export async function listInputDevices(paths: HostPaths): Promise<string[]> {
+  if ((await statOrNull(paths.capture)) === null) return [];
+  const result = await run(paths.capture, ["devices"], { timeoutMs: 10_000 }).catch(() => null);
+  return result === null || result.code !== 0 ? [] : parseInputDevices(result.stdout);
+}
+
 export interface LocalStartInput {
   readonly meetingId: string;
   readonly appKey: string;
   readonly label: string;
   readonly ownerName: string;
+  /** Input device name chosen in settings; empty = the microphone the meeting app uses. */
+  readonly inputDevice: string;
   readonly engine: "whisper" | "gigaam";
   readonly language: string;
   readonly glossary: string;
@@ -160,9 +195,7 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
     },
   };
   await writeJsonAtomic(path.join(dir, F.config), config);
-  const bundles = localSourceBundles(input.appKey);
-  const args = ["record", "--meeting-dir", dir];
-  if (bundles.length > 0) args.push("--bundle-ids", bundles.join(","));
+  const args = captureArgs(dir, input.appKey, input.inputDevice);
   // Spawn first, then write the initial state exclusively with the real pid: no
   // pid-0 window, and the helper's own fast-failure state (e.g. a denied microphone)
   // is never overwritten because the create is exclusive.

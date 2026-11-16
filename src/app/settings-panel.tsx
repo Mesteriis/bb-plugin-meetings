@@ -26,7 +26,12 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
   const [settings, setSettings] = useState<SettingsValues | null>(null);
   const [patch, setPatch] = useState<SettingsValues>({});
   const [saved, setSaved] = useState(false);
-  const load = useAsyncAction(async () => { setSettings((await rpc.call("notetaker.settings", {})).settings as SettingsValues); });
+  const [microphones, setMicrophones] = useState<readonly string[]>([]);
+  const load = useAsyncAction(async () => {
+    setSettings((await rpc.call("notetaker.settings", {})).settings as SettingsValues);
+    // The device list is a convenience: without it the saved name is still shown and kept.
+    setMicrophones((await rpc.call("env.status").catch(() => null))?.env?.inputDevices ?? []);
+  });
   const refresh = load.run;
   useEffect(() => { void refresh(); }, [refresh]);
   const update = (key: string, value: string | number | boolean) => { setPatch(previous => ({ ...previous, [key]: value })); setSaved(false); };
@@ -77,6 +82,14 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
             {boolean("localAutoRecord", "Начинать запись автоматически")}
             {number("localStartThresholdSec", "Порог начала, с", 1, 300)}
             {number("localGraceSec", "Остановить после тишины, с", 5, 3600)}
+            <Field label="Микрофон" hint="С него записывается ваш голос. Звук собеседников берётся прямо из приложения встречи и от микрофона и наушников не зависит.">
+              <select className={fieldClass} aria-label="Микрофон" value={String(value("localMicrophone") ?? "")} onChange={event => update("localMicrophone", event.target.value)}>
+                <option value="">Тот же, что у приложения встречи</option>
+                {[...new Set([...microphones, String(value("localMicrophone") ?? "")])].filter(name => name !== "").map(name => (
+                  <option key={name} value={name}>{microphones.includes(name) ? name : `${name} (не подключён)`}</option>
+                ))}
+              </select>
+            </Field>
             {text("localOwnerName", "Имя владельца в записи")}
             {text("localLanguage", "Язык распознавания")}
             {text("localGlossary", "Глоссарий терминов", "Одно на строку")}

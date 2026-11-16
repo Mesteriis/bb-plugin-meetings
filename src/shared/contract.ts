@@ -72,6 +72,8 @@ export const envReportSchema = z
     sudo: z.boolean(),
     gigaam: gigaamStatusSchema,
     chromePath: z.string().nullable(),
+    /** macOS local recording: names of the microphones the owner can choose from. */
+    inputDevices: z.array(z.string()).optional(),
   })
   .strict();
 export type EnvReport = z.infer<typeof envReportSchema>;
@@ -330,6 +332,8 @@ export const hostContract = defineRpcContract({
         appKey: z.string().min(1).max(64),
         label: z.string().min(1).max(64),
         ownerName: z.string().max(64),
+        /** Input device name chosen in settings; empty = the microphone the meeting app uses. */
+        inputDevice: z.string().max(200),
         engine: z.enum(["whisper", "gigaam"]),
         language: z.string().max(200),
         glossary: z.string().max(4000),

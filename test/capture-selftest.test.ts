@@ -18,7 +18,7 @@ describe.skipIf(!hasSwift)("capture helper", () => {
       const result = spawnSync(binary, ["selftest"], { encoding: "utf8" });
       const lines = result.stdout.trim().split("\n");
       expect(lines.filter((line) => !line.endsWith(": ok"))).toEqual([]);
-      expect(lines).toHaveLength(43);
+      expect(lines).toHaveLength(47);
       expect(result.status).toBe(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

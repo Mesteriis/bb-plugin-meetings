@@ -1092,15 +1092,23 @@ the system audio) locally, then transcribes with the same pipeline.
   missing) with runtime/capture/Info.plist embedded (NSMicrophoneUsageDescription,
   NSAudioCaptureUsageDescription). `record --meeting-dir <dir> --bundle-ids …`
   records two streams and writes state.json/events.jsonl in the bot's shapes:
-  * **Microphone.** A Core Audio IO proc on the input device the meeting
-    app's audio processes use (kAudioProcessPropertyDevices, input scope),
-    because the system default input can be a dead device (a MacBook's own
-    microphone with the lid closed delivers exact zeros). The system default
-    only when the app's device cannot be read; `--input-device <name>` forces
-    one for diagnostics. Once a second the helper checks whether the app
-    moved to another device, the device changed its format, or buffers
-    stopped for 3 s, and then starts the path again (at most every 5 s). The
-    chosen device and every restart are in events.jsonl.
+  * **Microphone.** A Core Audio IO proc on one input device, read as its
+    first input stream. The device is the one chosen in settings
+    (localMicrophone → `--input-device <name>`; `capture devices` lists the
+    names for the settings page through the env report's inputDevices). With
+    no choice, or while the chosen device is not connected, it is the device
+    the meeting app's audio processes use (kAudioProcessPropertyDevices,
+    input scope), because the system default input can be a dead device (a
+    MacBook's own microphone with the lid closed delivers exact zeros); the
+    system default only when nothing names a device. Once a second the
+    helper restarts the path when the named device is another one, the
+    device's stream format changed, or buffers stopped for 3 s; it keeps the
+    current device when nothing names one (an app that closes its input
+    while muted). Restarts back off 5, 10, 20, 40, 60 s until audio arrives,
+    and log one line per change. Verified by real runs: a 48 kHz 2-channel
+    and a 16 kHz mono device, and the fallback for a missing device. Not
+    exercised: the app-device choice during a real call, unplugging a device
+    during a recording.
   * **System audio.** A private Core Audio process tap on the app's playing
     processes inside a private aggregate device (macOS 14.2+ API). When the
     app is not playing yet at start, the tap covers all system audio except
@@ -1112,8 +1120,10 @@ the system audio) locally, then transcribes with the same pipeline.
   * **One clock.** Each callback's host timestamp places its samples on the
     recording's 16 kHz sample clock (StreamClock). A stream more than 100 ms
     behind its timestamps gets a gap of zeros; a stream more than 100 ms
-    ahead (a device clock that runs fast) has the excess samples dropped, so
-    neither error grows beyond the tolerance however long the meeting is.
+    ahead (a device clock that runs fast) has the excess samples dropped.
+    The error therefore stays within the tolerance plus one buffer (about
+    200 ms in the self-test: one hour of 100 ms buffers at ±0.125 %), at the
+    price of dropped samples or inserted silence; there is no resampling.
     Gaps are zeros in the stream's own file, so a position in mic.pcm,
     system.pcm and audio.pcm is the same moment. audio.pcm is the clamped
     per-sample sum (TimelineMixer); output never waits more than 1 s for the
@@ -1127,8 +1137,12 @@ the system audio) locally, then transcribes with the same pipeline.
     while a tapped process was playing, a microphone whose last 10 s are
     exact zeros or that stopped delivering for 10 s: each becomes
     `audioIssue` (reason `capture`) as soon as it is known, naming the
-    device or the operation and its OSStatus. The meeting ends `failed`
-    (`recording_failed`) only when neither stream has sound.
+    device or the operation and its OSStatus. Exact zeros from a microphone
+    cannot tell a hardware mute from a dead device or a withheld permission,
+    and the message lists all three. The meeting ends `failed`
+    (`recording_failed`) only when neither stream has sound. Consent is
+    expected to be attributed to BB as the responsible process; no prompt
+    and no recording launched by BB has been observed yet.
   * **Stop.** SIGTERM/SIGINT or stop.request: stop IO, destroy the IO proc,
     aggregate and tap, close the files, compress audio.ogg (ffmpeg, Opus),
     write the final state. A start still blocked inside Core Audio is
