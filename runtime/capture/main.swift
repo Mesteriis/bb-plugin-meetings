@@ -133,14 +133,6 @@ func pickInputDevice(appDevices: [AudioDeviceID], systemDefault: AudioDeviceID?)
   return nil
 }
 
-/// Point the engine's input at a device. Must run before the input format is read.
-func selectInputDevice(_ node: AVAudioInputNode, _ device: AudioDeviceID) -> OSStatus {
-  guard let unit = node.audioUnit else { return kAudioUnitErr_Uninitialized }
-  var id = device
-  return AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                              &id, UInt32(MemoryLayout<AudioDeviceID>.size))
-}
-
 // ── tap + aggregate device (system audio) ───────────────────────────────
 
 func translatePidToProcessObject(_ pid: pid_t) -> AudioObjectID {
@@ -216,7 +208,7 @@ enum Step<T> {
 }
 
 /// Create the tap: the app's playing processes, or everything but this helper when none plays yet.
-func createSystemTap(_ bundleIds: [String]) -> Step<(AudioObjectID, String)> {
+func createSystemTap(_ bundleIds: [String]) -> Step<(tap: AudioObjectID, uid: String, appScoped: Bool)> {
   let ids = resolveTapObjects(bundleIds)
   let description: CATapDescription
   if !ids.isEmpty {
@@ -235,7 +227,7 @@ func createSystemTap(_ bundleIds: [String]) -> Step<(AudioObjectID, String)> {
     AudioHardwareDestroyProcessTap(tapID)
     return .failed(CaptureFailure(operation: "kAudioTapPropertyUID", status: kAudioHardwareUnknownPropertyError))
   }
-  return .ok((tapID, uid))
+  return .ok((tapID, uid, !ids.isEmpty))
 }
 
 func createAggregate(tapUID: String) -> Step<AudioObjectID> {
@@ -273,11 +265,9 @@ func handleSignal(_ sig: Int32) {
   stopRequested = true
 }
 
-/// Append Int16 mono 16 kHz samples to a file, tracking byte count and peak amplitude.
+/// Append Int16 mono 16 kHz samples to a file.
 final class PcmWriter {
   private var handle: FileHandle?
-  private(set) var bytes: Int = 0
-  private(set) var peak: Double = 0
   private let lock = NSLock()
 
   init(_ path: String) {
@@ -288,14 +278,7 @@ final class PcmWriter {
   func write(_ pcm: [Int16]) {
     lock.lock(); defer { lock.unlock() }
     guard let handle = handle, !pcm.isEmpty else { return }
-    for sample in pcm {
-      let magnitude = abs(Double(sample))
-      if magnitude > peak { peak = magnitude }
-    }
-    pcm.withUnsafeBytes { buffer in
-      handle.write(Data(buffer))
-    }
-    bytes += pcm.count * 2
+    pcm.withUnsafeBytes { handle.write(Data($0)) }
   }
 
   /// Zeros for a gap in the stream; they do not count towards the peak.
@@ -303,7 +286,6 @@ final class PcmWriter {
     lock.lock(); defer { lock.unlock() }
     guard let handle = handle, samples > 0 else { return }
     handle.write(Data(count: samples * 2))
-    bytes += samples * 2
   }
 
   func close() {
@@ -339,11 +321,19 @@ struct StreamClock {
   static let tolerance = SAMPLE_RATE / 10
   private(set) var position = 0
 
-  /// The output index of a buffer of `count` samples stamped at `start`.
-  mutating func place(start: Int, count: Int) -> Int {
-    let index = start > position + StreamClock.tolerance ? start : position
-    position = index + count
-    return index
+  /// Where a buffer of `count` samples stamped at `start` goes, and how many of
+  /// its leading samples to drop. A stream whose device clock runs fast gets ahead
+  /// of its timestamps; once that lead exceeds the tolerance the excess is dropped,
+  /// a few samples a buffer, so the lead never grows beyond the tolerance.
+  mutating func place(start: Int, count: Int) -> (index: Int, skip: Int) {
+    if start > position + StreamClock.tolerance {
+      position = start + count
+      return (start, 0)
+    }
+    let skip = min(count, max(0, position - start - StreamClock.tolerance))
+    let index = position
+    position += count - skip
+    return (index, skip)
   }
 }
 
@@ -399,16 +389,30 @@ final class TimelineMixer {
   }
 }
 
+/// What one stream has put into the recording so far.
+struct StreamStats {
+  /// Samples accepted into the recording (padding excluded).
+  var samples = 0
+  /// Loudest accepted sample.
+  var peak = 0
+  /// Exact-zero samples at the end of the stream so far.
+  var trailingZeros = 0
+  /// When the last buffer was accepted.
+  var lastBuffer: Date? = nil
+}
+
 /// mic.pcm, system.pcm and the mixed audio.pcm on one sample clock. Gaps in a
 /// stream are written as zeros to its own file too, so a position in any of the
-/// three files is the same moment of the recording.
+/// three files is the same moment of the recording. Nothing is accepted or
+/// counted after finish(): the statistics describe what is in the files.
 final class RecordingStreams {
   static let mic = 0
   static let system = 1
-  let writers: [PcmWriter]
+  private let writers: [PcmWriter]
   private let mixWriter: PcmWriter
   private var clocks = [StreamClock(), StreamClock()]
   private var filled = [0, 0]
+  private var counters = [StreamStats(), StreamStats()]
   private var mixer: TimelineMixer!
   private let lock = NSLock()
   private var closed = false
@@ -420,20 +424,35 @@ final class RecordingStreams {
     mixer = TimelineMixer { out.write($0) }
   }
 
-  func append(_ stream: Int, start: Int, _ pcm: [Int16]) {
+  func stats(_ stream: Int) -> StreamStats {
     lock.lock(); defer { lock.unlock() }
-    guard !closed, !pcm.isEmpty else { return }
-    let index = clocks[stream].place(start: max(0, start), count: pcm.count)
+    return counters[stream]
+  }
+
+  func append(_ stream: Int, start: Int, _ buffer: [Int16]) {
+    lock.lock(); defer { lock.unlock() }
+    guard !closed, !buffer.isEmpty else { return }
+    let (index, skip) = clocks[stream].place(start: max(0, start), count: buffer.count)
+    let pcm = skip == 0 ? buffer : Array(buffer[skip...])
+    counters[stream].lastBuffer = Date()
+    guard !pcm.isEmpty else { return }
     if index > filled[stream] {
       writers[stream].writeSilence(index - filled[stream])
     }
     writers[stream].write(pcm)
     filled[stream] = index + pcm.count
     mixer.add(stream: stream, index: index, samples: pcm)
+    counters[stream].samples += pcm.count
+    for sample in pcm {
+      let magnitude = abs(Int(sample))
+      if magnitude > counters[stream].peak { counters[stream].peak = magnitude }
+      counters[stream].trailingZeros = sample == 0 ? counters[stream].trailingZeros + 1 : 0
+    }
   }
 
   func finish() {
     lock.lock(); defer { lock.unlock() }
+    guard !closed else { return }
     closed = true
     mixer.finish()
     writers.forEach { $0.close() }
@@ -513,7 +532,7 @@ func writeFailedState(_ dir: String, _ startedAt: Int64, _ message: String) {
   appendEvent(dir + "/events.jsonl", ["t": nowMs(), "level": "error", "msg": message])
 }
 
-/// Converts the tap's native stream to 16 kHz mono Int16, honouring the
+/// Converts a device or tap stream to 16 kHz mono Int16, honouring the
 /// AudioStreamBasicDescription (channel layout, interleaving) and resampling with
 /// AVAudioConverter instead of nearest-sample decimation.
 final class SystemTapConverter {
@@ -598,7 +617,7 @@ struct SystemCaptureStatus {
   /// Samples the IO proc delivered.
   var samples = 0
   /// Loudest delivered sample.
-  var peak = 0.0
+  var peak = 0
   /// A tapped process was seen playing audio at some point during the recording.
   var tappedOutput = false
 }
@@ -628,18 +647,211 @@ func systemCaptureIssue(_ status: SystemCaptureStatus, final: Bool) -> String? {
 }
 
 let MICROPHONE_PERMISSION = "устройство отключено (например, закрыта крышка ноутбука) или BB не разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность"
+/// No buffers for this long means the microphone has stopped.
+let MICROPHONE_STALL_S = 10.0
+
+/// What the microphone path has done so far.
+struct MicrophoneStatus {
+  var device: String
+  /// Why it did not start, or nil.
+  var failure: String? = nil
+  var samples = 0
+  var peak = 0
+  /// Exact-zero samples at the end of the stream so far.
+  var trailingZeros = 0
+  /// Seconds since the last buffer, or since the recording started when there was none.
+  var stalledSeconds = 0.0
+}
 
 /// The microphone issue, or nil. A live microphone always carries some noise, so
-/// a stream of exact zeros means the device is dead or macOS is withholding it.
-/// Judged like the system stream: not before it had time to deliver.
-func microphoneIssue(device: String, samples: Int, peak: Double, final: Bool) -> String? {
-  if samples == 0 {
-    return final ? "Микрофон «\(device)» не записан: AVAudioEngine не выдал данных; \(MICROPHONE_PERMISSION)" : nil
+/// ten seconds of exact zeros mean the device is dead or macOS is withholding it;
+/// no buffers for ten seconds mean it has gone. Looks at the end of the stream,
+/// so a microphone that worked and then went away is reported.
+func microphoneIssue(_ mic: MicrophoneStatus, final: Bool) -> String? {
+  if let failure = mic.failure {
+    return "Микрофон «\(mic.device)» не запустился: \(failure); \(MICROPHONE_PERMISSION)"
   }
-  if peak <= 0 && (final || samples >= SILENCE_JUDGE_SAMPLES) {
-    return "Микрофон «\(device)» выдаёт тишину: \(MICROPHONE_PERMISSION)"
+  if mic.samples == 0 {
+    guard final || mic.stalledSeconds >= MICROPHONE_STALL_S else { return nil }
+    return "Микрофон «\(mic.device)» не записан: устройство не выдало данных; \(MICROPHONE_PERMISSION)"
+  }
+  if mic.stalledSeconds >= MICROPHONE_STALL_S {
+    return "Микрофон «\(mic.device)» перестал выдавать звук \(Int(mic.stalledSeconds)) с назад: устройство отключено?"
+  }
+  if mic.trailingZeros >= SILENCE_JUDGE_SAMPLES || (final && mic.peak <= 0) {
+    return "Микрофон «\(mic.device)» выдаёт тишину: \(MICROPHONE_PERMISSION)"
   }
   return nil
+}
+
+/// The format of a device's input (its first input stream), or nil.
+func inputFormat(_ device: AudioDeviceID) -> AudioStreamBasicDescription? {
+  var address = AudioObjectPropertyAddress(
+    mSelector: kAudioDevicePropertyStreamFormat, mScope: kAudioObjectPropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+  var asbd = AudioStreamBasicDescription()
+  var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+  guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &asbd) == noErr, asbd.mSampleRate > 0, asbd.mChannelsPerFrame > 0 else {
+    return nil
+  }
+  return asbd
+}
+
+/// The input device with this name, or nil.
+func inputDeviceNamed(_ name: String) -> AudioDeviceID? {
+  var address = AudioObjectPropertyAddress(
+    mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+  var size: UInt32 = 0
+  let system = AudioObjectID(kAudioObjectSystemObject)
+  guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return nil }
+  var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+  guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return nil }
+  return devices.first { deviceName($0) == name && inputFormat($0) != nil }
+}
+
+/// When the microphone path must be started again: the meeting app moved to
+/// another input device, the device changed its format (AirPods switching
+/// profile), or buffers stopped arriving (unplugged). Not while a start is
+/// under way, and not more often than every `retryS` seconds.
+func microphoneNeedsRestart(busy: Bool, sinceStartS: Double, current: AudioDeviceID?, wanted: AudioDeviceID?,
+                            formatChanged: Bool, stalledS: Double, retryS: Double = 5, stallS: Double = 3) -> Bool {
+  guard !busy, sinceStartS >= retryS else { return false }
+  if let wanted = wanted, wanted != current { return true }
+  return formatChanged || stalledS >= stallS
+}
+
+/// The microphone path: an IO proc on the input device the meeting app uses,
+/// the same mechanism as the system-audio path. It starts on its own thread
+/// (a start can wait on the microphone consent) and starts again when the
+/// device, its format or its buffers go away. A failure is kept as text for the
+/// capture issue; it is never fatal on its own.
+final class MicrophoneCapture {
+  private let bundleIds: [String]
+  private let forcedDevice: String?
+  private let streams: RecordingStreams
+  private let clockStart: Double
+  private let events: String
+  private let lock = NSLock()
+  private var name = "не выбран"
+  private var failure: String? = nil
+  private var device: AudioDeviceID? = nil
+  private var format: AudioStreamBasicDescription? = nil
+  private var ioProcID: AudioDeviceIOProcID? = nil
+  private var busy = false
+  private var stopped = false
+  private var startedAt = Date()
+
+  init(bundleIds: [String], forcedDevice: String?, streams: RecordingStreams, clockStart: Double, events: String) {
+    self.bundleIds = bundleIds
+    self.forcedDevice = forcedDevice
+    self.streams = streams
+    self.clockStart = clockStart
+    self.events = events
+  }
+
+  /// (device name, why it did not start or nil)
+  var state: (device: String, failure: String?) {
+    lock.lock(); defer { lock.unlock() }
+    return (name, failure)
+  }
+
+  /// The device to record: named on the command line, else the meeting app's, else the system default.
+  private func wantedDevice() -> (device: AudioDeviceID, origin: String)? {
+    if let forced = forcedDevice.flatMap(inputDeviceNamed) {
+      return (forced, "named on the command line")
+    }
+    guard let picked = pickInputDevice(appDevices: appInputDevices(bundleIds), systemDefault: defaultInputDevice()) else { return nil }
+    return (picked.device, picked.fromApp ? "the device the meeting app uses" : "system default input")
+  }
+
+  func start() {
+    lock.lock()
+    guard !busy, !stopped else { lock.unlock(); return }
+    busy = true
+    startedAt = Date()
+    lock.unlock()
+    Thread.detachNewThread { [self] in
+      teardown()
+      begin()
+      lock.lock()
+      busy = false
+      let late = stopped
+      lock.unlock()
+      if late { teardown() }
+    }
+  }
+
+  /// Called once a second by the recording loop.
+  func tick(stalledSeconds: Double) {
+    lock.lock()
+    let (isBusy, current, built, since) = (busy, device, format, Date().timeIntervalSince(startedAt))
+    lock.unlock()
+    let wanted = wantedDevice()?.device
+    let now = current.flatMap(inputFormat)
+    let formatChanged = built != nil && (now?.mSampleRate != built?.mSampleRate || now?.mChannelsPerFrame != built?.mChannelsPerFrame
+                                          || now?.mFormatFlags != built?.mFormatFlags)
+    guard microphoneNeedsRestart(busy: isBusy, sinceStartS: since, current: current, wanted: wanted,
+                                 formatChanged: formatChanged, stalledS: stalledSeconds) else { return }
+    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "microphone: the input changed or stopped; starting it again"])
+    start()
+  }
+
+  private func fail(_ label: String, _ text: String) {
+    lock.lock(); name = label; failure = text; lock.unlock()
+    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "microphone: \(label) did not start: \(text)"])
+  }
+
+  private func begin() {
+    guard let (chosen, origin) = wantedDevice() else {
+      fail("нет", "в системе нет устройства ввода")
+      return
+    }
+    let label = deviceName(chosen)
+    guard let asbd = inputFormat(chosen), let converter = SystemTapConverter(asbd: asbd) else {
+      fail(label, "kAudioDevicePropertyStreamFormat: устройство не даёт входного формата")
+      return
+    }
+    let streams = self.streams
+    let clockStart = self.clockStart
+    var procID: AudioDeviceIOProcID? = nil
+    let created = AudioDeviceCreateIOProcIDWithBlock(&procID, chosen, nil) { _, input, inputTime, _, _ in
+      let pcm = converter.toInt16(input)
+      guard !pcm.isEmpty else { return }
+      streams.append(RecordingStreams.mic, start: Int((hostSeconds(inputTime.pointee.mHostTime) - clockStart) * Double(SAMPLE_RATE)), pcm)
+    }
+    guard created == noErr, let proc = procID else {
+      fail(label, CaptureFailure(operation: "AudioDeviceCreateIOProcIDWithBlock", status: created).text)
+      return
+    }
+    lock.lock(); device = chosen; ioProcID = proc; format = asbd; lock.unlock()
+    let begun = AudioDeviceStart(chosen, proc)
+    guard begun == noErr else {
+      fail(label, CaptureFailure(operation: "AudioDeviceStart", status: begun).text)
+      return
+    }
+    lock.lock(); name = label; failure = nil; lock.unlock()
+    appendEvent(events, ["t": nowMs(), "level": "info",
+                         "msg": "microphone: \(label) (\(origin)), \(Int(asbd.mSampleRate)) Hz, \(asbd.mChannelsPerFrame) ch"])
+  }
+
+  private func teardown() {
+    lock.lock()
+    let (current, proc) = (device, ioProcID)
+    device = nil; ioProcID = nil; format = nil
+    lock.unlock()
+    if let current = current, let proc = proc {
+      AudioDeviceStop(current, proc)
+      AudioDeviceDestroyIOProcID(current, proc)
+    }
+  }
+
+  /// Stop IO. A start still blocked inside Core Audio undoes itself when it returns.
+  func stop() {
+    lock.lock()
+    stopped = true
+    let blocked = busy
+    lock.unlock()
+    if !blocked { teardown() }
+  }
 }
 
 /// Self-test of the pure parts: mixing on one clock and the capture-issue rules.
@@ -679,16 +891,16 @@ func runSelfTest() -> Int32 {
 
   // Microphone only for 3 s: 48000 samples equal to the microphone, never more than 1 s held back.
   let (micOnly, micOnlyBacklog) = run({ mixer, mic, _, tick in
-    mixer.add(stream: 0, index: mic.place(start: tick * chunk, count: chunk), samples: micChunk)
+    mixer.add(stream: 0, index: mic.place(start: tick * chunk, count: chunk).index, samples: micChunk)
   }, ticks: 30)
   check("timeline-mic-only", micOnly.count == 48_000 && micOnly.allSatisfy { $0 == 1000 })
   check("timeline-mic-only-backlog", micOnlyBacklog <= 16_000)
 
   // System stream starting 2 s late: its first sample lands at output index 32000.
   let (late, lateBacklog) = run({ mixer, mic, sys, tick in
-    mixer.add(stream: 0, index: mic.place(start: tick * chunk, count: chunk), samples: micChunk)
+    mixer.add(stream: 0, index: mic.place(start: tick * chunk, count: chunk).index, samples: micChunk)
     if tick >= 20 {
-      mixer.add(stream: 1, index: sys.place(start: tick * chunk, count: chunk), samples: sysChunk)
+      mixer.add(stream: 1, index: sys.place(start: tick * chunk, count: chunk).index, samples: sysChunk)
     }
   }, ticks: 30)
   check("timeline-late-start", late.count == 48_000 && late[31_999] == 1000 && late[32_000] == 3000 && late[47_999] == 3000)
@@ -696,9 +908,9 @@ func runSelfTest() -> Int32 {
 
   // A 0.5 s gap in the system stream (ticks 10-14): zeros there, total length unchanged.
   let (gap, gapBacklog) = run({ mixer, mic, sys, tick in
-    mixer.add(stream: 0, index: mic.place(start: tick * chunk, count: chunk), samples: micChunk)
+    mixer.add(stream: 0, index: mic.place(start: tick * chunk, count: chunk).index, samples: micChunk)
     if tick < 10 || tick >= 15 {
-      mixer.add(stream: 1, index: sys.place(start: tick * chunk, count: chunk), samples: sysChunk)
+      mixer.add(stream: 1, index: sys.place(start: tick * chunk, count: chunk).index, samples: sysChunk)
     }
   }, ticks: 30)
   check("timeline-gap", gap.count == 48_000 && gap[15_999] == 3000 && gap[16_000 ..< 24_000].allSatisfy { $0 == 1000 } && gap[24_000] == 3000)
@@ -706,12 +918,12 @@ func runSelfTest() -> Int32 {
 
   // Timestamps that jitter by 5 ms do not open gaps.
   var jitter = StreamClock()
-  let first = jitter.place(start: 0, count: chunk)
-  let second = jitter.place(start: chunk + 80, count: chunk)
+  let first = jitter.place(start: 0, count: chunk).index
+  let second = jitter.place(start: chunk + 80, count: chunk).index
   check("clock-jitter", first == 0 && second == 1_600)
   var jump = StreamClock()
   _ = jump.place(start: 0, count: chunk)
-  check("clock-gap", jump.place(start: 9_600, count: chunk) == 9_600)
+  check("clock-gap", jump.place(start: 9_600, count: chunk).index == 9_600)
 
   // Capture issue rules.
   let nope = CaptureFailure(operation: "AudioHardwareCreateAggregateDevice", status: 1_852_797_029)
@@ -730,10 +942,38 @@ func runSelfTest() -> Int32 {
   check("issue-audible", systemCaptureIssue(SystemCaptureStatus(started: true, samples: 160_000, peak: 900, tappedOutput: true), final: true) == nil)
 
   // Microphone issue rules.
-  check("mic-zeros", microphoneIssue(device: "MacBook Pro Microphone", samples: 160_000, peak: 0, final: false) == "Микрофон «MacBook Pro Microphone» выдаёт тишину: устройство отключено (например, закрыта крышка ноутбука) или BB не разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность")
-  check("mic-zeros-too-early", microphoneIssue(device: "x", samples: 16_000, peak: 0, final: false) == nil)
-  check("mic-no-samples-at-end", microphoneIssue(device: "x", samples: 0, peak: 0, final: true)?.contains("AVAudioEngine не выдал данных") == true)
-  check("mic-audible", microphoneIssue(device: "x", samples: 160_000, peak: 40, final: true) == nil)
+  check("mic-zeros", microphoneIssue(MicrophoneStatus(device: "MacBook Pro Microphone", samples: 160_000, peak: 0, trailingZeros: 160_000), final: false) == "Микрофон «MacBook Pro Microphone» выдаёт тишину: устройство отключено (например, закрыта крышка ноутбука) или BB не разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность")
+  check("mic-zeros-too-early", microphoneIssue(MicrophoneStatus(device: "x", samples: 16_000, peak: 0, trailingZeros: 16_000), final: false) == nil)
+  check("mic-no-samples-at-end", microphoneIssue(MicrophoneStatus(device: "x"), final: true)?.contains("устройство не выдало данных") == true)
+  check("mic-no-samples-after-10s", microphoneIssue(MicrophoneStatus(device: "x", stalledSeconds: 10), final: false)?.contains("устройство не выдало данных") == true)
+  check("mic-audible", microphoneIssue(MicrophoneStatus(device: "x", samples: 160_000, peak: 40), final: true) == nil)
+  check("mic-went-silent-after-sound", microphoneIssue(MicrophoneStatus(device: "x", samples: 960_000, peak: 9000, trailingZeros: 160_000), final: false)?.contains("выдаёт тишину") == true)
+  check("mic-stopped-after-sound", microphoneIssue(MicrophoneStatus(device: "AirPods", samples: 960_000, peak: 9000, stalledSeconds: 12), final: false) == "Микрофон «AirPods» перестал выдавать звук 12 с назад: устройство отключено?")
+  check("mic-start-failure", microphoneIssue(MicrophoneStatus(device: "x", failure: "AudioDeviceStart → -50"), final: false)?.hasPrefix("Микрофон «x» не запустился: AudioDeviceStart → -50") == true)
+
+  // One hour of 100 ms buffers from a device whose clock is off: the stream stays
+  // within the tolerance (plus one buffer) of where its timestamps say it is.
+  func drift(_ samplesPerBuffer: Int) -> Int {
+    var clock = StreamClock()
+    for tick in 0 ..< 36_000 { _ = clock.place(start: tick * chunk, count: samplesPerBuffer) }
+    return clock.position - 36_000 * chunk
+  }
+  let fast = drift(1_602)
+  let slow = drift(1_598)
+  check("clock-fast-device-bounded", fast >= 0 && fast <= 3_300)
+  check("clock-slow-device-bounded", slow <= 0 && slow >= -3_300)
+  var lead = StreamClock()
+  _ = lead.place(start: 0, count: 4_800)
+  let trimmed = lead.place(start: 1_600, count: 1_600)
+  check("clock-lead-trimmed", trimmed.index == 4_800 && trimmed.skip == 1_600 && lead.position == 4_800)
+
+  // Restarting the microphone: a new app device, a format change or a stall, never while starting.
+  check("mic-restart-steady", !microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: false, stalledS: 0.1))
+  check("mic-restart-app-moved", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 57, formatChanged: false, stalledS: 0.1))
+  check("mic-restart-format", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: true, stalledS: 0.1))
+  check("mic-restart-stalled", microphoneNeedsRestart(busy: false, sinceStartS: 60, current: 91, wanted: 91, formatChanged: false, stalledS: 3))
+  check("mic-restart-not-while-starting", !microphoneNeedsRestart(busy: true, sinceStartS: 60, current: nil, wanted: 57, formatChanged: false, stalledS: 30))
+  check("mic-restart-not-too-often", !microphoneNeedsRestart(busy: false, sinceStartS: 4, current: nil, wanted: 57, formatChanged: false, stalledS: 4))
 
   // Microphone choice: the meeting app's device wins over the system default.
   let fromApp = pickInputDevice(appDevices: [91, 57], systemDefault: 57)
@@ -756,15 +996,30 @@ final class SystemCapture {
   private var aggregateID: AudioObjectID? = nil
   private var ioProcID: AudioDeviceIOProcID? = nil
   private var starting = false
+  private var cancelled = false
+  private var appScoped: Bool? = nil
   private let startedAt = Date()
-  /// True when the tap covers all system audio because the app was not playing yet.
-  private(set) var fallback = false
+  private let streams: RecordingStreams
 
+  init(streams: RecordingStreams) {
+    self.streams = streams
+  }
+
+  /// The path's status; samples and peak are what the recording accepted.
   var snapshot: SystemCaptureStatus {
+    let accepted = streams.stats(RecordingStreams.system)
     lock.lock(); defer { lock.unlock() }
     var copy = status
+    copy.samples = accepted.samples
+    copy.peak = accepted.peak
     copy.timedOut = starting && Date().timeIntervalSince(startedAt) >= SYSTEM_START_TIMEOUT_S
     return copy
+  }
+
+  /// True when the tap covers all system audio because the app was not playing; nil until the tap exists.
+  var fallback: Bool? {
+    lock.lock(); defer { lock.unlock() }
+    return appScoped.map { !$0 }
   }
 
   func noteTappedOutput() {
@@ -777,23 +1032,29 @@ final class SystemCapture {
     status.failure = failure
   }
 
-  func start(bundleIds: [String], streams: RecordingStreams, clockStart: Double) {
-    fallback = resolveTapObjects(bundleIds).isEmpty
+  func start(bundleIds: [String], clockStart: Double) {
     lock.lock(); starting = true; lock.unlock()
     Thread.detachNewThread { [self] in
-      run(bundleIds: bundleIds, streams: streams, clockStart: clockStart)
-      lock.lock(); starting = false; lock.unlock()
+      run(bundleIds: bundleIds, clockStart: clockStart)
+      lock.lock()
+      starting = false
+      let late = cancelled
+      lock.unlock()
+      // The recording was finalized while this start was blocked: undo it.
+      if late { teardown() }
     }
   }
 
-  private func run(bundleIds: [String], streams: RecordingStreams, clockStart: Double) {
+  private func run(bundleIds: [String], clockStart: Double) {
     let tap: AudioObjectID
     let uid: String
     switch createSystemTap(bundleIds) {
-    case let .ok((id, tapUid)): tap = id; uid = tapUid
+    case let .ok(created):
+      tap = created.tap
+      uid = created.uid
+      lock.lock(); tapID = tap; appScoped = created.appScoped; lock.unlock()
     case let .failed(failure): fail(failure); return
     }
-    lock.lock(); tapID = tap; lock.unlock()
     let aggregate: AudioObjectID
     switch createAggregate(tapUID: uid) {
     case let .ok(id): aggregate = id
@@ -804,18 +1065,13 @@ final class SystemCapture {
       fail(CaptureFailure(operation: "kAudioTapPropertyFormat", status: kAudioHardwareUnsupportedOperationError))
       return
     }
+    let streams = self.streams
     var procID: AudioDeviceIOProcID? = nil
-    let created = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregate, nil) { [self] _, input, inputTime, _, _ in
+    let created = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregate, nil) { _, input, inputTime, _, _ in
       let pcm = converter.toInt16(input)
       guard !pcm.isEmpty else { return }
       let start = Int((hostSeconds(inputTime.pointee.mHostTime) - clockStart) * Double(SAMPLE_RATE))
       streams.append(RecordingStreams.system, start: start, pcm)
-      var loudest = 0.0
-      for sample in pcm { loudest = max(loudest, abs(Double(sample))) }
-      lock.lock()
-      status.samples += pcm.count
-      status.peak = max(status.peak, loudest)
-      lock.unlock()
     }
     guard created == noErr, let proc = procID else {
       fail(CaptureFailure(operation: "AudioDeviceCreateIOProcIDWithBlock", status: created))
@@ -830,15 +1086,22 @@ final class SystemCapture {
     lock.lock(); status.started = true; lock.unlock()
   }
 
-  /// Stop IO and remove the devices. While the start is still blocked inside
-  /// Core Audio the objects are left alone: they are private to this process and
-  /// go away when it exits.
+  /// Stop IO and remove the devices. A start still blocked inside Core Audio is
+  /// marked cancelled and undoes itself if it ever returns; the recording accepts
+  /// nothing after RecordingStreams.finish() either way.
   func stop() {
     lock.lock()
+    cancelled = true
     let blocked = starting
-    let (tap, aggregate, proc) = (tapID, aggregateID, ioProcID)
     lock.unlock()
-    guard !blocked else { return }
+    if !blocked { teardown() }
+  }
+
+  private func teardown() {
+    lock.lock()
+    let (tap, aggregate, proc) = (tapID, aggregateID, ioProcID)
+    tapID = nil; aggregateID = nil; ioProcID = nil
+    lock.unlock()
     if let aggregate = aggregate, let proc = proc {
       AudioDeviceStop(aggregate, proc)
       AudioDeviceDestroyIOProcID(aggregate, proc)
@@ -852,108 +1115,58 @@ func audioIssueObject(_ message: String, since: Int64) -> [String: Any] {
   return ["since": since, "attempts": 0, "lastAction": NSNull(), "message": message, "reason": "capture", "escalated": true]
 }
 
-func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
+func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?) -> Never {
   signal(SIGTERM, handleSignal)
   signal(SIGINT, handleSignal)
 
   let events = meetingDir + "/events.jsonl"
   let startedAt = nowMs()
+  let began = Date()
   let clockStart = hostSeconds(mach_absolute_time())
   stateJson(meetingDir, "in_meeting", startedAt)
   appendEvent(events, ["t": startedAt, "level": "info", "msg": "local recording started"])
 
+  // Two independent paths: either one alone still makes a usable recording.
   let streams = RecordingStreams(meetingDir)
-  let micWriter = streams.writers[RecordingStreams.mic]
+  let microphone = MicrophoneCapture(bundleIds: bundleIds, forcedDevice: inputDevice, streams: streams, clockStart: clockStart, events: events)
+  microphone.start()
+  let system = SystemCapture(streams: streams)
+  system.start(bundleIds: bundleIds, clockStart: clockStart)
 
-  // ── microphone (AVAudioEngine, default input) ─────────────────────────
-  let micEngine = AVAudioEngine()
-  let micInput = micEngine.inputNode
-  guard let chosen = pickInputDevice(appDevices: appInputDevices(bundleIds), systemDefault: defaultInputDevice()) else {
-    writeFailedState(meetingDir, startedAt, "Микрофон не найден: в системе нет устройства ввода")
-    exit(1)
-  }
-  let micName = deviceName(chosen.device)
-  let selected = selectInputDevice(micInput, chosen.device)
-  appendEvent(events, [
-    "t": nowMs(), "level": selected == noErr ? "info" : "warn",
-    "msg": selected == noErr
-      ? "microphone: \(micName) (\(chosen.fromApp ? "the device the meeting app uses" : "system default input"))"
-      : "microphone: could not select \(micName) (kAudioOutputUnitProperty_CurrentDevice → \(describeStatus(selected))); using the system default input",
-  ])
-  let micFormat = micInput.outputFormat(forBus: 0)
-  guard micFormat.channelCount > 0 else {
-    writeFailedState(meetingDir, startedAt, "Микрофон «\(micName)» не даёт входных каналов: запись невозможна")
-    exit(1)
-  }
-  guard let micOutFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(SAMPLE_RATE), channels: 1, interleaved: false) else {
-    writeFailedState(meetingDir, startedAt, "Не удалось создать формат записи микрофона")
-    exit(1)
-  }
-  guard let micConverter = AVAudioConverter(from: micFormat, to: micOutFormat) else {
-    writeFailedState(meetingDir, startedAt, "Не удалось создать преобразователь микрофона")
-    exit(1)
-  }
-  micInput.installTap(onBus: 0, bufferSize: 1024, format: micFormat) { buffer, when in
-    let ratio = micOutFormat.sampleRate / buffer.format.sampleRate
-    let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
-    guard let converted = AVAudioPCMBuffer(pcmFormat: micOutFormat, frameCapacity: capacity) else { return }
-    var fed = false
-    var error: NSError?
-    micConverter.convert(to: converted, error: &error) { _, outStatus in
-      outStatus.pointee = fed ? .noDataNow : .haveData
-      fed = true
-      return buffer
-    }
-    guard converted.frameLength > 0, let channel = converted.floatChannelData?[0] else { return }
-    let samples = UnsafeBufferPointer(start: channel, count: Int(converted.frameLength))
-    let pcm = samples.map { Int16(max(-1.0, min(1.0, Double($0))) * 32767.0) }
-    let stamp = when.isHostTimeValid ? when.hostTime : mach_absolute_time()
-    let start = Int((hostSeconds(stamp) - clockStart) * Double(SAMPLE_RATE))
-    streams.append(RecordingStreams.mic, start: start, pcm)
-  }
-  micEngine.prepare()
-  do {
-    try micEngine.start()
-  } catch {
-    writeFailedState(meetingDir, startedAt, "Микрофон не запустился (AVAudioEngine.start: \(error.localizedDescription)): разрешите BB доступ в Системных настройках → Конфиденциальность и безопасность → Микрофон")
-    exit(1)
-  }
-
-  // ── system audio, started off the main thread ─────────────────────────
-  let system = SystemCapture()
-  system.start(bundleIds: bundleIds, streams: streams, clockStart: clockStart)
-  if system.fallback {
-    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "the meeting app is not playing yet: recording all system audio for this meeting"])
+  func microphoneStatus() -> MicrophoneStatus {
+    let accepted = streams.stats(RecordingStreams.mic)
+    let (device, failure) = microphone.state
+    return MicrophoneStatus(device: device, failure: failure, samples: accepted.samples, peak: accepted.peak,
+                            trailingZeros: accepted.trailingZeros,
+                            stalledSeconds: Date().timeIntervalSince(accepted.lastBuffer ?? began))
   }
 
   var issue: String? = nil
   var issueSince: Int64 = 0
   /// Recompute the capture issue; log it and stamp it when it appears or changes.
   func refreshIssue(final: Bool) {
-    let parts = [
-      microphoneIssue(device: micName, samples: micWriter.bytes / 2, peak: micWriter.peak, final: final),
-      systemCaptureIssue(system.snapshot, final: final),
-    ].compactMap { $0 }
+    let parts = [microphoneIssue(microphoneStatus(), final: final), systemCaptureIssue(system.snapshot, final: final)].compactMap { $0 }
     let next = parts.isEmpty ? nil : parts.joined(separator: " ")
-    if next != issue {
-      issue = next
-      issueSince = nowMs()
-      if let message = next {
-        appendEvent(events, ["t": issueSince, "level": "warn", "msg": message])
-      } else {
-        appendEvent(events, ["t": issueSince, "level": "info", "msg": "both streams are being recorded"])
-      }
+    guard next != issue else { return }
+    issue = next
+    issueSince = nowMs()
+    if let message = next {
+      appendEvent(events, ["t": issueSince, "level": "warn", "msg": message])
+    } else {
+      appendEvent(events, ["t": issueSince, "level": "info", "msg": "both streams are being recorded"])
     }
   }
   func writeState(_ phase: String) {
-    let status = system.snapshot
+    let mic = streams.stats(RecordingStreams.mic)
+    let sys = streams.stats(RecordingStreams.system)
     stateJson(meetingDir, phase, startedAt, nil,
-              audioSeconds: Double(micWriter.bytes) / 2.0 / Double(SAMPLE_RATE),
-              audioBytes: micWriter.bytes + status.samples * 2,
+              audioSeconds: Date().timeIntervalSince(began),
+              audioBytes: (mic.samples + sys.samples) * 2,
               audioIssue: issue.map { audioIssueObject($0, since: issueSince) })
   }
 
   var lastBeat = Date()
+  var fallbackLogged = false
   var appAppeared = false
   while !stopRequested {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
@@ -965,48 +1178,51 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
     guard now.timeIntervalSince(lastBeat) >= 1.0 else { continue }
     lastBeat = now
     // Once a second: is the tapped audio playing? (All other apps when the tap is the fallback.)
+    let fallback = system.fallback ?? false
     let appPlaying = !resolveTapObjects(bundleIds).isEmpty
-    if appPlaying || (system.fallback && anyOtherOutput()) {
+    if fallback && !fallbackLogged {
+      fallbackLogged = true
+      appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "the meeting app was not playing at start: recording all system audio for this meeting"])
+    }
+    if fallback ? anyOtherOutput() : appPlaying {
       system.noteTappedOutput()
     }
-    if system.fallback && appPlaying && !appAppeared {
+    if fallback && appPlaying && !appAppeared {
       appAppeared = true
       appendEvent(events, ["t": nowMs(), "level": "info", "msg": "the meeting app started playing; this recording keeps capturing all system audio"])
     }
+    microphone.tick(stalledSeconds: microphoneStatus().stalledSeconds)
     refreshIssue(final: false)
     writeState("in_meeting")
   }
 
-  // Stop the system IO first, so nothing is written while the files close.
+  // Stop both paths, then close the files: nothing is accepted or counted after finish().
   system.stop()
-  micInput.removeTap(onBus: 0)
-  micEngine.stop()
+  microphone.stop()
   streams.finish()
 
   if !compressOgg(meetingDir) {
     appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "audio.ogg was not produced (ffmpeg missing or failed); playback unavailable"])
   }
 
-  let status = system.snapshot
+  let mic = streams.stats(RecordingStreams.mic)
+  let sys = streams.stats(RecordingStreams.system)
   appendEvent(events, [
     "t": nowMs(), "level": "info", "msg": "local recording stopped",
-    "data": ["micBytes": micWriter.bytes, "micPeak": micWriter.peak,
-             "systemSamples": status.samples, "systemPeak": status.peak, "systemStarted": status.started],
+    "data": ["micSamples": mic.samples, "micPeak": mic.peak, "systemSamples": sys.samples, "systemPeak": sys.peak,
+             "systemStarted": system.snapshot.started],
   ])
 
-  // Neither stream has sound: nothing usable was recorded.
   refreshIssue(final: true)
-  let micAudible = micWriter.bytes > 0 && micWriter.peak > 0
-  let systemAudible = status.samples > 0 && status.peak > 0
-  if !micAudible && !systemAudible {
+  // Neither stream has sound: nothing usable was recorded.
+  if mic.peak <= 0 && sys.peak <= 0 {
     writeFailedState(meetingDir, startedAt, issue ?? "Запись пуста: ни микрофон, ни системный звук не дали сигнала")
-    exit(1)
+    _exit(1)
   }
-
   // One audible stream is a usable recording; what is missing stays a visible warning.
   writeState("ended")
-  // A start still blocked inside Core Audio must not keep the process alive.
-  exit(0)
+  // _exit: a start still blocked inside Core Audio must not hold up the exit handlers.
+  _exit(0)
 }
 
 // ── main ────────────────────────────────────────────────────────────────
@@ -1025,8 +1241,13 @@ if arguments.count >= 2 && arguments[1] == "selftest" {
   if let index = arguments.firstIndex(of: "--bundle-ids"), index + 1 < arguments.count {
     bundleIds = arguments[index + 1].split(separator: ",").map { String($0) }
   }
-  runRecord(meetingDir, bundleIds)
+  // Diagnostics: record from the input device with this name instead of the app's.
+  var inputDevice: String? = nil
+  if let index = arguments.firstIndex(of: "--input-device"), index + 1 < arguments.count {
+    inputDevice = arguments[index + 1]
+  }
+  runRecord(meetingDir, bundleIds, inputDevice: inputDevice)
 } else {
-  FileHandle.standardError.write(("usage: capture detect | record --meeting-dir <dir> [--bundle-ids ids]" + NL).data(using: .utf8)!)
+  FileHandle.standardError.write(("usage: capture detect | selftest | record --meeting-dir <dir> [--bundle-ids ids] [--input-device name]" + NL).data(using: .utf8)!)
   exit(2)
 }
