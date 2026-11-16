@@ -258,6 +258,7 @@ async function checkMacEnv(paths: HostPaths, input: EnvCheckInput, platform: Nod
   ]);
   const capture = await statOrNull(paths.capture);
   const whisper = await statOrNull(paths.whisperModel);
+  const detectOk = capture === null ? false : await run(paths.capture, ["detect"], { timeoutMs: 10_000 }).then((r) => r.code === 0 && r.stdout.trim().startsWith("[")).catch(() => false);
   const macOk =
     macVersion !== null &&
     (macVersion.major > MIN_MACOS_MAJOR || (macVersion.major === MIN_MACOS_MAJOR && macVersion.minor >= MIN_MACOS_MINOR));
@@ -287,6 +288,15 @@ async function checkMacEnv(paths: HostPaths, input: EnvCheckInput, platform: Nod
       required: true,
       version: null,
       detail: capture !== null ? paths.capture : "не скомпилирован (bb meetings setup)",
+      fix: "bb meetings setup",
+    }),
+    item({
+      id: "detection",
+      label: "Обнаружение встреч (detect)",
+      ok: detectOk,
+      required: true,
+      version: null,
+      detail: detectOk ? "capture detect возвращает список процессов" : "capture detect не отвечает (проверьте bb meetings logs)",
       fix: "bb meetings setup",
     }),
     item({

@@ -66,7 +66,7 @@ describe("env.check", () => {
     const paths = hostPaths(await tempDir());
     const report = await checkEnv(paths, { chromePath: "", gigaamUrl: "http://127.0.0.1:9" }, { platform: "darwin", arch: "arm64" });
     expect(report.items.map((item) => item.id)).toEqual([
-      "macos", "swiftc", "capture", "ffmpeg", "uv", "venv", "sherpa-onnx",
+      "macos", "swiftc", "capture", "detection", "ffmpeg", "uv", "venv", "sherpa-onnx",
       "vad-model", "speaker-model", "whisper-model", "microphone", "system-audio", "gigaam",
     ]);
     expect(report.platform).toBe("darwin");
