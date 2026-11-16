@@ -26,9 +26,11 @@ export interface LocalSourceRule extends LocalSource {
  * browser is used. Helpers (com.google.Chrome.helper.*, com.apple.WebKit.*,
  * company.thebrowser.browser.*, …) are folded into it by prefix.
  */
+// Safari (com.apple.Safari) is not supported: its WebKit helpers are launchd-spawned
+// (ppid 1), so their owning app cannot be resolved and a Safari call cannot be
+// detected reliably (DESIGN §15).
 export const BROWSER_BUNDLE_IDS = [
   "com.google.Chrome",
-  "com.apple.Safari",
   "company.thebrowser.browser",
   "company.thebrowser.dia",
   "ru.yandex.desktop.yandex-browser",
@@ -106,25 +108,10 @@ export function classifyBundleId(bundleId: string): LocalSource | null {
   return null;
 }
 
-/** Classify a raw audio process: a WebKit helper is a browser call only when its
- * owning app (resolved in the capture helper's detect, C12) is a listed browser. */
-export function classifyProcess(proc: { bundleId: string; owner?: string }): LocalSource | null {
-  const id = proc.bundleId.trim();
-  if (id.startsWith("com.apple.WebKit")) {
-    if (proc.owner !== undefined && (BROWSER_BUNDLE_IDS as readonly string[]).includes(proc.owner)) {
-      return { appKey: "browser", label: "Браузер" };
-    }
-    return null;
-  }
-  return classifyBundleId(id);
-}
-
 /** A raw audio client process as reported by the capture helper's `detect`. */
 export interface AudioClientProcess {
   readonly pid: number;
   readonly bundleId: string;
-  /** The owning app bundle id for WebKit helpers, resolved in the capture helper (C12). */
-  readonly owner?: string;
   /** kAudioProcessPropertyIsRunningInput: the process holds the microphone. */
   readonly input: boolean;
   readonly output: boolean;
@@ -140,7 +127,7 @@ export function activeSources(processes: readonly AudioClientProcess[], excludeP
   const seen = new Map<string, LocalSource>();
   for (const proc of processes) {
     if (!proc.input || excludePids.has(proc.pid)) continue;
-    const source = classifyProcess(proc);
+    const source = classifyBundleId(proc.bundleId);
     if (source !== null && !seen.has(source.appKey)) seen.set(source.appKey, source);
   }
   return [...seen.values()];

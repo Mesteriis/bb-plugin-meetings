@@ -1,6 +1,6 @@
 // Bundle-id mapping for local recording (DESIGN §15). Pure, no I/O.
 import { describe, expect, it } from "vitest";
-import { activeSources, classifyBundleId, classifyProcess, localSourceLabel, LOCAL_SOURCE_RULES } from "../src/host/local-sources.js";
+import { activeSources, classifyBundleId, localSourceLabel, LOCAL_SOURCE_RULES } from "../src/host/local-sources.js";
 
 describe("classifyBundleId", () => {
   it("maps a meeting app by its exact bundle id", () => {
@@ -11,7 +11,7 @@ describe("classifyBundleId", () => {
   });
 
   it('folds every supported browser and its helpers into one "browser call" source', () => {
-    for (const id of ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.browser", "org.mozilla.firefox", "com.microsoft.edgemac"]) {
+    for (const id of ["com.google.Chrome", "company.thebrowser.browser", "org.mozilla.firefox", "com.microsoft.edgemac"]) {
       expect(classifyBundleId(id)).toEqual({ appKey: "browser", label: "Браузер" });
     }
   });
@@ -20,11 +20,9 @@ describe("classifyBundleId", () => {
     expect(classifyBundleId("us.zoom.caphost")).toEqual({ appKey: "zoom", label: "Zoom" });
     expect(classifyBundleId("com.microsoft.teams.helper")).toEqual({ appKey: "teams", label: "Microsoft Teams" });
     expect(classifyBundleId("com.google.Chrome.helper.1")).toEqual({ appKey: "browser", label: "Браузер" });
-    // com.apple.WebKit.* is classified by its owning app, resolved in the capture helper.
+    // Safari is not supported: WebKit helpers are launchd-spawned and their owner cannot be resolved.
     expect(classifyBundleId("com.apple.WebKit.GPU")).toBeNull();
-    expect(classifyProcess({ bundleId: "com.apple.WebKit.GPU", owner: "com.apple.Safari" })).toEqual({ appKey: "browser", label: "Браузер" });
-    expect(classifyProcess({ bundleId: "com.apple.WebKit.GPU", owner: "com.apple.Finder" })).toBeNull();
-    expect(classifyProcess({ bundleId: "com.apple.WebKit.GPU" })).toBeNull();
+    expect(classifyBundleId("com.apple.Safari")).toBeNull();
     expect(classifyBundleId("company.thebrowser.browser.helper")).toEqual({ appKey: "browser", label: "Браузер" });
   });
 

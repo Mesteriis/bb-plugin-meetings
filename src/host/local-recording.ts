@@ -6,7 +6,7 @@ import path from "node:path";
 import type { RuntimeSnapshot } from "../shared/contract.js";
 import type { BotState } from "../shared/runtime-files.js";
 import { run } from "./exec.js";
-import { errorMessage, statOrNull, writeJsonAtomic } from "./fsutil.js";
+import { createJsonExclusive, errorMessage, statOrNull, writeJsonAtomic } from "./fsutil.js";
 import { seedRecording, stepDetection, createDetectionState, type DetectionState } from "./local-detection.js";
 import { activeSources, localSourceBundles, type AudioClientProcess } from "./local-sources.js";
 import { childEnv, snapshot } from "./meetings.js";
@@ -153,9 +153,9 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
   const bundles = localSourceBundles(input.appKey);
   const args = ["record", "--meeting-dir", dir];
   if (bundles.length > 0) args.push("--bundle-ids", bundles.join(","));
-  // Write the initial state BEFORE spawning so the helper's own fast-failure
-  // state (e.g. a denied microphone) is never overwritten by the host.
-  await writeJsonAtomic(path.join(dir, F.state), initialState(input.meetingId, 0));
+  // Spawn first, then write the initial state exclusively with the real pid: no
+  // pid-0 window, and the helper's own fast-failure state (e.g. a denied microphone)
+  // is never overwritten because the create is exclusive.
   const pid = await spawnDetached({
     command: paths.capture,
     args,
@@ -163,6 +163,7 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
     logFile: path.join(dir, F.botLog),
     env: childEnv(paths),
   });
+  await createJsonExclusive(path.join(dir, F.state), initialState(input.meetingId, pid)).catch(() => undefined);
   await writeJsonAtomic(path.join(dir, F.pids), { bot: { pid, startedAt: now } });
   return snapshot(paths, input.meetingId);
 }
