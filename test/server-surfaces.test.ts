@@ -51,7 +51,7 @@ describe("registrations", () => {
       "POST /mock-meeting/log",
     ]);
     expect(r.httpRoutes.every((route) => route.auth === (/\/(mcp|api)-token$/.test(route.path) ? "none" : "local"))).toBe(true);
-    expect(r.services.map((s) => s.name)).toEqual(["scheduler", "completion-recovery"]);
+    expect(r.services.map((s) => s.name)).toEqual(["scheduler", "completion-recovery", "local-detection"]);
     expect(r.cli?.name).toBe("meetings");
     expect(r.cli?.commands.map((c) => c.name).sort()).toEqual(
       [
