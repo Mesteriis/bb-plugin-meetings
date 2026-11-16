@@ -38,7 +38,6 @@ export const BROWSER_BUNDLE_IDS = [
 
 const BROWSER_HELPER_PREFIXES = [
   "com.google.Chrome.helper",
-  "com.apple.WebKit",
   "company.thebrowser.browser.",
   "company.thebrowser.dia.",
   "ru.yandex.desktop.yandex-browser.",

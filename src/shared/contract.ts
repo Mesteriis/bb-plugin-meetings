@@ -301,8 +301,8 @@ export const hostContract = defineRpcContract({
       .object({
         startThresholdMs: z.number().int().min(1000).max(300_000),
         graceMs: z.number().int().min(1000).max(3_600_000),
-        /** Enabled appKeys; empty = all supported. */
-        apps: z.array(z.string()).max(64),
+        /** Enabled appKeys; null = all supported, [] = none. */
+        apps: z.array(z.string()).max(64).nullable(),
       })
       .strict(),
     output: z

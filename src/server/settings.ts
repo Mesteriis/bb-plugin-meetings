@@ -441,15 +441,16 @@ export function calendarFeedUrls(settings: Pick<MeetingsSettings, "calendarIcsUr
     .map((url) => url.replace(/^webcal:\/\//i, "https://"));
 }
 
-/** The localApps setting (JSON array of appKeys), or [] when empty/invalid. */
-export function parseLocalApps(value: string): string[] {
-  if (value.trim() === "") return [];
+/** The localApps setting: null when never set (all apps), else the selected appKeys
+ * (an explicit empty selection []= no app). */
+export function parseLocalApps(value: string): string[] | null {
+  if (value.trim() === "") return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) return null;
     return parsed.filter((entry): entry is string => typeof entry === "string");
   } catch {
-    return [];
+    return null;
   }
 }
 
