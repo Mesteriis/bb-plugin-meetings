@@ -1063,3 +1063,60 @@ A second calendar source next to the ICS feeds (§10); both feed the same
   button reads "stop my video"/"start my video" and is briefly disabled while
   the camera starts; the bot's self-view is mirrored (others see it
   unmirrored). The camera's device label in Zoom is the .mjpeg path.
+
+## 15. Local recording (macOS Apple silicon)
+
+A second recording mode next to the Linux bot: no bot joins the call. The
+plugin notices that a meeting app on this Mac holds the microphone and records
+the microphone (and, when the System Audio Recording permission is granted,
+the system audio) locally, then transcribes with the same pipeline.
+
+* **Platform.** darwin-arm64 only; the bot stays Linux-only and says so on a
+  Mac. macOS 14.4+ (process taps need it) and Apple silicon.
+* **Detection.** The capture helper's detect subcommand lists Core Audio
+  client processes (kAudioHardwarePropertyProcessObjectList + per-object
+  PID/bundleID/IsRunningInput/IsRunningOutput). src/host/local-sources.ts
+  maps bundle ids to sources — Zoom (us.zoom.xos; us.zoom.caphost appears
+  only during a call), Teams, Telegram, FaceTime, and every supported browser
+  (Chrome, Safari/WebKit, Arc, Dia, Yandex, Firefox, Edge) as one "browser"
+  source. src/host/local-detection.ts is a pure, clock-injected state machine:
+  a source starts when it holds the microphone continuously for
+  localStartThresholdSec (default 5 s) and ends when it has released it for
+  localGraceSec (default 60 s). Flapping input resets the hold timer; two
+  apps overlap independently; a source already recording never starts again.
+  The bb CLI and the capture helper never count (their bundle ids are not
+  listed sources).
+* **Capture helper.** A Swift CLI shipped as runtime/capture/main.swift,
+  compiled on the host during setup with swiftc (xcode-select --install when
+  missing). record --meeting-dir <dir> writes audio.pcm (s16le 16 kHz mono)
+  and mic.pcm, plus state.json/events.jsonl in the bot's shapes, and
+  finalizes on SIGTERM/SIGINT. A denied microphone permission ends in a
+  visible recording_failed state naming the permission and where to grant it.
+  System-audio capture through a Core Audio process tap is the remaining
+  piece: it needs the System Audio Recording permission, which this thread
+  cannot exercise; the helper records the microphone only until it is wired.
+* **File contract.** Local recordings reuse the meeting directory: config.json
+  carries platform "local", sourceApp, sourceLabel, ownerName and the
+  transcriber block (including engine, language, glossary). mic.pcm
+  distinguishes the owner's microphone; the transcriber attributes mic speech
+  to ownerName (default «Я») and system-audio speech through acoustic
+  clustering (runtime/transcriber/transcriber.py _build_local_timeline).
+* **Speech engine.** engine "whisper" (default on macOS) runs mlx-whisper with
+  mlx-community/whisper-large-v3-turbo in-process, chosen over a managed server
+  because it keeps the existing detached-transcriber model (no new long-lived
+  process, one lock serializes inference); model download happens in setup with
+  a visible env item. engine "gigaam" keeps the HTTP path. language (default
+  ru) and glossary (initial prompt) are passed to both where accepted.
+  macOS-only packages live in runtime/transcriber/requirements-macos.txt and
+  are never installed on Linux.
+* **Server.** Settings localRecordingEnabled, localAutoRecord,
+  localStartThresholdSec, localGraceSec, localOwnerName, localEngine,
+  localLanguage, localGlossary, localApps. The scheduler polls local.poll on
+  the primary host only when it is darwin-arm64 and local recording is enabled;
+  started creates a meeting row (platform/source "local", url local://<appKey>)
+  and local.start spawns the helper; ended stops it. A meeting already
+  recording for the same app is not started twice (the running one is never
+  lost across a plugin restart).
+* **Process inspection.** macOS has no /proc: src/host/processes-mac.ts
+  implements readProc/listProcs with ps (state, pgid, tty, command) and lsof
+  (cwd). The Linux /proc path is unchanged.

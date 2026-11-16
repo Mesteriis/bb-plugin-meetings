@@ -525,6 +525,14 @@ export class MeetingsService {
 
   private async assertEnvReady(): Promise<EnvReport> {
     const report = await this.autoSetup(await this.envReport(false), true);
+    if (report.platform === "darwin") {
+      throw new MeetingsError(
+        "linux_only",
+        "Бот-запись поддерживается только на Linux. На этом Mac включите «Локальную запись» в настройках — плагин запишет встречу без бота.",
+        "The notetaker bot requires Linux; use local recording on this Mac instead",
+        "Enable local recording on the Meetings page settings (bb plugin config meetings set localRecordingEnabled true)",
+      );
+    }
     const missing = report.items.filter((item) => item.required && !item.ok && item.id !== "gigaam");
     if (missing.length > 0) {
       const names = missing.map((item) => item.label).join(", ");
