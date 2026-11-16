@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -1160,5 +1161,106 @@ class ScaleTest(unittest.TestCase):
         self.assertEqual(len(t["speakers"]), 3)
 
 
+class LocalRecordingTests(unittest.TestCase):
+    """Local recording (DESIGN §15): engine selection, mic→owner attribution, serialized Whisper calls."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="local-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def make_transcriber(self, transcriber_extra=None):
+        d = os.path.join(self.tmp, "mtg_local0001")
+        os.makedirs(d)
+        cfg = {
+            "version": 1,
+            "meetingId": "mtg_local0001",
+            "platform": "local",
+            "sourceApp": "zoom",
+            "sourceLabel": "Zoom",
+            "url": "local://zoom",
+            "ownerName": "Я",
+            "createdAt": 0,
+            "transcriber": {
+                "gigaamUrl": None,
+                "diarization": "ui+acoustic",
+                "speakerLagMs": 700,
+                "keepRawAudio": False,
+                "threads": 0,
+                "engine": "whisper",
+                "language": "ru",
+                "glossary": "",
+                "ownerName": "Я",
+                **(transcriber_extra or {}),
+            },
+        }
+        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        with open(os.path.join(d, "state.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "meetingId": "mtg_local0001", "pid": 123, "phase": "in_meeting",
+                       "recordingStartedAt": 1000}, f)
+        args = types.SimpleNamespace(meeting_dir=d, mode="offline", models_dir="", gigaam_url=None, host_data="", threads=None)
+        return d, tr.Transcriber(args)
+
+    def test_engine_selection_whisper(self):
+        _, t = self.make_transcriber()
+        self.assertEqual(t.engine, "whisper")
+        self.assertIsInstance(t.asr, tr.WhisperAsr)
+
+    def test_engine_selection_gigaam(self):
+        _, t = self.make_transcriber({"engine": "gigaam"})
+        self.assertEqual(t.engine, "gigaam")
+        self.assertIsInstance(t.asr, tr.AsrClient)
+
+    def test_local_timeline_attributes_mic_to_owner(self):
+        d, t = self.make_transcriber()
+        t.rec_start = 1000.0
+        sr = tr.SAMPLE_RATE
+        # 0.4 s of digital silence, 1.0 s of a 440 Hz sine at half scale, 0.4 s silence again.
+        x = np.concatenate([
+            np.zeros(int(0.4 * sr), dtype=np.float32),
+            (0.5 * np.sin(2 * np.pi * 440 * np.arange(int(1.0 * sr)) / sr)).astype(np.float32),
+            np.zeros(int(0.4 * sr), dtype=np.float32),
+        ])
+        with open(os.path.join(d, "mic.pcm"), "wb") as f:
+            f.write((x * 32767.0).astype(np.int16).tobytes())
+        t._build_local_timeline()
+        with open(os.path.join(d, "speakers.jsonl"), encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f]
+        self.assertTrue(lines, "no speakers.jsonl lines were written")
+        owners = [ev for ev in lines if ev.get("src") == "local-mic" and ev.get("speakers") == ["Я"]]
+        self.assertTrue(owners, f"no owner-attributed line in {lines}")
+
+    def test_whisper_calls_serialized(self):
+        state = {"active": 0, "max": 0}
+        lock = threading.Lock()
+
+        def impl(audio, language, initial_prompt):
+            with lock:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+            time.sleep(0.05)
+            with lock:
+                state["active"] -= 1
+            return "текст"
+
+        stop = threading.Event()
+        asr = tr.WhisperAsr("ru", "", stop, lambda *_: None, transcribe_impl=impl)
+        results = []
+
+        def call():
+            results.append(asr.transcribe(np.zeros(1600, dtype=np.float32)))
+
+        threads = [threading.Thread(target=call) for _ in range(4)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(state["max"], 1)
+        self.assertEqual(results, ["текст", "текст", "текст", "текст"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
