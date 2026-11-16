@@ -8,7 +8,7 @@ import type { BotState } from "../shared/runtime-files.js";
 import { run } from "./exec.js";
 import { createJsonExclusive, errorMessage, statOrNull, writeJsonAtomic } from "./fsutil.js";
 import { seedRecording, stepDetection, createDetectionState, type DetectionState } from "./local-detection.js";
-import { activeSources, localSourceBundles, type AudioClientProcess } from "./local-sources.js";
+import { activeSources, localSourceBundles, localSourceLabel, type AudioClientProcess } from "./local-sources.js";
 import { childEnv, snapshot } from "./meetings.js";
 import { MEETING_FILES as F, meetingDir, type HostPaths } from "./paths.js";
 import { isMacArm64 } from "./platform.js";
@@ -58,10 +58,19 @@ export async function localPoll(paths: HostPaths, options: LocalPollOptions): Pr
   } catch {
     return { ...empty, supported: true, error: "capture detect вернул не JSON" };
   }
+  return stepLocalPoll(processes, options, Date.now());
+}
+
+/**
+ * One detection step over a `capture detect` sample: keep the enabled sources,
+ * mark the apps the server is already recording (so a restarted host worker
+ * neither starts them again nor forgets to end them), and advance the state machine.
+ */
+export function stepLocalPoll(processes: readonly AudioClientProcess[], options: LocalPollOptions, now: number): LocalPollResult {
   const enabled = options.apps === null ? null : new Set(options.apps);
   const sources = filterApps(activeSources(processes), enabled);
   detectionState = seedRecording(detectionState ?? createDetectionState(), options.recording);
-  const { state, events } = stepDetection(detectionState, sources, Date.now(), {
+  const { state, events } = stepDetection(detectionState, sources, now, {
     startThresholdMs: options.startThresholdMs,
     graceMs: options.graceMs,
   });
@@ -69,8 +78,9 @@ export async function localPoll(paths: HostPaths, options: LocalPollOptions): Pr
   return {
     supported: true,
     detected: sources,
-    started: events.filter((event) => event.type === "started").map((event) => ({ appKey: event.appKey, label: event.label })),
-    ended: events.filter((event) => event.type === "ended").map((event) => ({ appKey: event.appKey, label: event.label })),
+    started: events.filter((event) => event.type === "started").map((event) => ({ appKey: event.appKey, label: localSourceLabel(event.appKey) })),
+    // A source that is gone has no sample to take its label from: use the rule's.
+    ended: events.filter((event) => event.type === "ended").map((event) => ({ appKey: event.appKey, label: localSourceLabel(event.appKey) })),
     error: null,
   };
 }

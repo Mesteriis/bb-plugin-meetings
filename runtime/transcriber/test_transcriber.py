@@ -1225,6 +1225,48 @@ class LocalRecordingTests(unittest.TestCase):
         self.assertNotEqual(labels[1], "Я")
         self.assertEqual(labels[2], "Я")
 
+    def test_source_split_offsets_owner_then_remote(self):
+        """One continuous stretch: the owner in 0-2 s, the remote side in 2-4 s -> one cut at 2 s."""
+        sr = tr.SAMPLE_RATE
+        t = np.arange(4 * sr) / sr
+        tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        mic = tone.copy()
+        mic[2 * sr:] = 0.0
+        system = 0.4 * tone
+        system[:2 * sr] = 0.0
+        self.assertEqual(tr.source_split_offsets(mic, system), [32000])
+        # A single source throughout, and a 0.3 s interjection, are not split.
+        self.assertEqual(tr.source_split_offsets(tone, np.zeros_like(tone)), [])
+        blip = np.zeros_like(tone)
+        blip[int(1.0 * sr):int(1.3 * sr)] = 0.9
+        self.assertEqual(tr.source_split_offsets(0.2 * tone, blip), [])
+
+    def test_offline_local_back_to_back_speakers_are_split(self):
+        """The owner in 1-3 s and the remote side in 3-5 s with no pause: two segments, owner then remote."""
+        d = self._synthetic_local_meeting()
+        sr = tr.SAMPLE_RATE
+        n = 6 * sr
+        t = np.arange(n) / sr
+        tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        owner = np.zeros(n, dtype=np.float32)
+        remote = np.zeros(n, dtype=np.float32)
+        owner[1 * sr:3 * sr] = tone[1 * sr:3 * sr]
+        remote[3 * sr:5 * sr] = 0.8 * tone[3 * sr:5 * sr]
+        for name, x in (("mic.pcm", owner), ("system.pcm", remote), ("audio.pcm", np.clip(owner + remote, -1.0, 1.0))):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write((x * 32767.0).astype(np.int16).tobytes())
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        self.assertEqual(tr.Transcriber(self._local_args(d, "offline"), whisper_impl=impl).run(), 0)
+        segments = read_json(os.path.join(d, "transcript.json"))["segments"]
+        self.assertEqual(len(segments), 2, segments)
+        self.assertEqual(segments[0]["speaker"], "Я")
+        self.assertNotEqual(segments[1]["speaker"], "Я")
+        self.assertAlmostEqual(segments[0]["end"], 3.0, delta=0.15)
+        self.assertAlmostEqual(segments[1]["start"], 3.0, delta=0.15)
+
     def test_offline_local_twice_identical(self):
         d = self._synthetic_local_meeting()
 

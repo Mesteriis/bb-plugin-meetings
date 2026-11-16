@@ -65,7 +65,8 @@ export const LOCAL_SOURCE_RULES: readonly LocalSourceRule[] = [
   {
     appKey: "telegram",
     label: "Telegram",
-    bundleIds: ["ru.keepcoder.Telegram"],
+    // The App Store build and the direct-download build (Telegram Desktop).
+    bundleIds: ["ru.keepcoder.Telegram", "com.tdesktop.Telegram"],
     helperPrefixes: [],
   },
   {
