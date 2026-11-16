@@ -196,6 +196,88 @@ describe("local recording auto-record", () => {
     expect(["recording", "joining", "starting", "waiting_room", "waiting_for_host"]).not.toContain(after.status);
   });
 
+
+describe("detection timer", () => {
+  function run(settings: Record<string, string | number | boolean>, envPlatform: string, envArch: string) {
+    return load({ settings }).then((loaded) => {
+      loaded.fake.env = envReport({ platform: envPlatform as never, arch: envArch });
+      return loaded;
+    });
+  }
+
+  async function drive(service: Awaited<ReturnType<typeof load>>["service"], signal: AbortSignal, ms: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
+  }
+
+  it("feature off keeps tick at the idle cadence and never polls detection", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { harness, fake, service } = await run({ ...macSettings(), localRecordingEnabled: false }, "darwin", "arm64");
+    const tick = vi.spyOn(service, "tick");
+    const controller = new AbortController();
+    const sched = service.runScheduler(controller.signal);
+    const det = service.runLocalDetection(controller.signal);
+    await drive(service, controller.signal, 30_000);
+    expect(hostCalls(harness, "local.poll")).toHaveLength(0);
+    expect(tick.mock.calls.length).toBeLessThan(5);
+    controller.abort();
+    await Promise.all([sched, det]);
+    vi.useRealTimers();
+  });
+
+  it("Linux host never polls detection", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { harness, service } = await run(macSettings(), "linux", "x64");
+    const controller = new AbortController();
+    const sched = service.runScheduler(controller.signal);
+    const det = service.runLocalDetection(controller.signal);
+    await drive(service, controller.signal, 30_000);
+    expect(hostCalls(harness, "local.poll")).toHaveLength(0);
+    controller.abort();
+    await Promise.all([sched, det]);
+    vi.useRealTimers();
+  });
+
+  it("feature on polls detection about every 1s while tick keeps its 15s cadence", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { harness, service } = await run(macSettings(), "darwin", "arm64");
+    const tick = vi.spyOn(service, "tick");
+    const controller = new AbortController();
+    const sched = service.runScheduler(controller.signal);
+    const det = service.runLocalDetection(controller.signal);
+    await drive(service, controller.signal, 30_000);
+    const polls = hostCalls(harness, "local.poll").length;
+    expect(polls).toBeGreaterThanOrEqual(25);
+    expect(polls).toBeLessThanOrEqual(35);
+    expect(tick.mock.calls.length).toBeLessThan(5);
+    controller.abort();
+    await Promise.all([sched, det]);
+    vi.useRealTimers();
+  });
+
+  it("a throwing tick does not stop detection", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { harness, service } = await run(macSettings(), "darwin", "arm64");
+    vi.spyOn(service, "tick").mockRejectedValue(new Error("boom"));
+    const controller = new AbortController();
+    const sched = service.runScheduler(controller.signal);
+    const det = service.runLocalDetection(controller.signal);
+    await drive(service, controller.signal, 30_000);
+    expect(hostCalls(harness, "local.poll").length).toBeGreaterThan(0);
+    controller.abort();
+    await Promise.all([sched, det]);
+    vi.useRealTimers();
+  });
+});
+
+
   it("a host poll error does not stop a running recording", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
