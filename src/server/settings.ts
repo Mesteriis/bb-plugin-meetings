@@ -30,6 +30,15 @@ const jsonObjectOrEmpty = z.string().refine((value) => {
   }
 }, "Нужен JSON-объект ({…}) либо пустое поле");
 
+const jsonArrayOrEmpty = z.string().refine((value) => {
+  if (value.trim() === "") return true;
+  try {
+    return Array.isArray(JSON.parse(value));
+  } catch {
+    return false;
+  }
+}, "Нужен JSON-массив ([…]) либо пустое поле");
+
 function parsesAsUrl(value: string): boolean {
   try {
     new URL(value);
@@ -354,6 +363,70 @@ export function defineSettings(bb: BbPluginApi) {
       secret: true,
       experimental_schema: googleCredential("Client Secret"),
     },
+    localRecordingEnabled: {
+      type: "boolean",
+      label: "Локальная запись (macOS)",
+      description: "Записывать встречи без бота: плагин замечает, что приложение на этом Mac использует микрофон, и записывает звук локально. Работает на macOS 14.4+ (Apple silicon).",
+      default: false,
+    },
+    localAutoRecord: {
+      type: "boolean",
+      label: "Начинать запись автоматически",
+      description: "Начинать запись сразу, как только обнаружена встреча (без подтверждения).",
+      default: true,
+    },
+    localStartThresholdSec: {
+      type: "number",
+      label: "Порог начала записи, с",
+      description: "Сколько приложение должно непрерывно держать микрофон, чтобы запись началась (1–300).",
+      experimental_schema: z.number().int().min(1).max(300),
+      default: 5,
+    },
+    localGraceSec: {
+      type: "number",
+      label: "Остановить после тишины, с",
+      description: "Сколько ждать после того, как приложение отпустило микрофон, прежде чем остановить запись (5–3600).",
+      experimental_schema: z.number().int().min(5).max(3600),
+      default: 60,
+    },
+    localOwnerName: {
+      type: "string",
+      label: "Имя владельца в записи",
+      description: "Под этим именем в транскрипте показывается речь из микрофона (речь участников из системного звука разделяется по голосам).",
+      experimental_schema: z.string().max(64),
+      default: "Я",
+    },
+    localEngine: {
+      type: "select",
+      label: "Распознавание локальной записи",
+      description: "Whisper — локальная модель (large-v3-turbo, ускорение Apple silicon); GigaAM — сервер плагина gigaam.",
+      options: ["whisper", "gigaam"],
+      experimental_optionLabels: { whisper: "Whisper (локально)", gigaam: "GigaAM (сервер)" },
+      default: "whisper",
+    },
+    localLanguage: {
+      type: "string",
+      label: "Язык распознавания",
+      description: "Подсказка языка для модели (например ru).",
+      experimental_schema: z.string().max(200),
+      default: "ru",
+    },
+    localGlossary: {
+      type: "string",
+      label: "Глоссарий терминов",
+      description: "Термины и имена, которые модель должна распознавать точнее; передаются как начальная подсказка. Одно на строку.",
+      experimental_multiline: true,
+      experimental_schema: z.string().max(4000),
+      default: "",
+    },
+    localApps: {
+      type: "string",
+      label: "Приложения для записи (JSON)",
+      description: "Массив ключей приложений, которые запускают запись: zoom, teams, telegram, facetime, browser. Пусто — все поддерживаемые.",
+      experimental_multiline: true,
+      experimental_schema: jsonArrayOrEmpty,
+      default: "",
+    },
   });
 }
 
@@ -366,6 +439,18 @@ export function calendarFeedUrls(settings: Pick<MeetingsSettings, "calendarIcsUr
     .split(/\s+/)
     .filter(Boolean)
     .map((url) => url.replace(/^webcal:\/\//i, "https://"));
+}
+
+/** The localApps setting (JSON array of appKeys), or [] when empty/invalid. */
+export function parseLocalApps(value: string): string[] {
+  if (value.trim() === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === "string");
+  } catch {
+    return [];
+  }
 }
 
 /** The speakerSelectors setting as an object, or null when empty/invalid. */

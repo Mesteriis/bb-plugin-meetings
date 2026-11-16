@@ -496,9 +496,12 @@ async function stopTranscriber(dir: string, pid: number): Promise<void> {
 }
 
 async function updateConfigTranscriber(dir: string, transcriber: TranscriberConfig): Promise<void> {
-  const config = await readJsonAs(file(dir, F.config), botConfigSchema);
-  if (config === null) throw new Error(`В каталоге встречи нет корректного config.json: ${dir}`);
-  await writeJsonAtomic(file(dir, F.config), { ...config, transcriber });
+  const config = await readJson(file(dir, F.config));
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`В каталоге встречи нет корректного config.json: ${dir}`);
+  }
+  // Preserve the meeting's own shape (bot or local): only the transcriber block is replaced.
+  await writeJsonAtomic(file(dir, F.config), { ...(config as Record<string, unknown>), transcriber });
 }
 
 export interface EnsureTranscriberInput {

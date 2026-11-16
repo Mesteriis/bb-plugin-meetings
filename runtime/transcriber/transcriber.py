@@ -852,6 +852,57 @@ class AsrClient:
             self.model = None
 
 
+# ----------------------------------------------------------------------------- whisper
+
+
+class WhisperAsr:
+    """Local Whisper ASR through mlx-whisper (Apple-silicon acceleration, DESIGN §15).
+    Loads the model lazily on first use; serializes inference with a lock because
+    mlx-whisper does not document thread-safety for concurrent transcribe calls."""
+
+    DEFAULT_REPO = "mlx-community/whisper-large-v3-turbo"
+
+    def __init__(self, language, glossary, stop, on_status):
+        self.language = language or None
+        self.glossary = glossary
+        self.stop = stop
+        self.on_status = on_status
+        self._impl = None
+        self.model = None
+        self.repo = os.environ.get("MEETINGS_WHISPER_MODEL") or self.DEFAULT_REPO
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if self._impl is not None:
+            return
+        import mlx_whisper  # macOS-only; installed from requirements-macos.txt
+        self._impl = mlx_whisper
+        self.model = self.repo
+
+    def transcribe(self, x):
+        """Text for the samples; "" when nothing was recognized. Raises Stopped on shutdown."""
+        self._load()
+        if self.stop.is_set():
+            raise Stopped()
+        params = {}
+        if self.language:
+            params["language"] = self.language
+        if self.glossary:
+            params["initial_prompt"] = self.glossary
+        import numpy as _np
+        audio = _np.asarray(x, dtype=_np.float32)
+        with self._lock:
+            self.on_status(None)
+            try:
+                result = self._impl.transcribe(audio, path_or_hf_repo=self.repo, **params)
+            except TypeError:
+                # Some mlx-whisper builds do not accept initial_prompt.
+                params.pop("initial_prompt", None)
+                result = self._impl.transcribe(audio, path_or_hf_repo=self.repo, **params)
+        text = (result.get("text") if isinstance(result, dict) else "") or ""
+        return " ".join(text.split())
+
+
 # ----------------------------------------------------------------------------- embeddings
 
 
@@ -1230,6 +1281,11 @@ class Transcriber:
         threads = args.threads if args.threads is not None else tr.get("threads")
         self.workers = int(threads) if is_number(threads) and threads > 0 else default_workers()
         primary_url = args.gigaam_url or tr.get("gigaamUrl")
+        self.platform = cfg.get("platform") if isinstance(cfg.get("platform"), str) else None
+        self.engine = tr.get("engine") if tr.get("engine") in ("whisper", "gigaam") else "gigaam"
+        self.language = tr.get("language") if isinstance(tr.get("language"), str) else "ru"
+        self.glossary = tr.get("glossary") if isinstance(tr.get("glossary"), str) else ""
+        self.owner_name = tr.get("ownerName") if isinstance(tr.get("ownerName"), str) else "Я"
 
         self.stop = threading.Event()
         self.lock = threading.RLock()
@@ -1252,7 +1308,10 @@ class Transcriber:
         self.effective_diarization = self.diarization
         self.timeline = SpeakerTimeline(self.paths["speakers"], self.lag_ms)
         discovery = os.path.join(self.host_data, "gigaam.json") if self.host_data else None
-        self.asr = AsrClient(primary_url, discovery, self.stop, self._asr_status)
+        if self.engine == "whisper":
+            self.asr = WhisperAsr(self.language, self.glossary, self.stop, self._asr_status)
+        else:
+            self.asr = AsrClient(primary_url, discovery, self.stop, self._asr_status)
 
     def _default_host_data(self):
         parent = os.path.dirname(self.dir)
@@ -1410,6 +1469,39 @@ class Transcriber:
             self.rec_start = float(bot["recordingStartedAt"])
         return bot
 
+    def _build_local_timeline(self):
+        """Local recording (DESIGN §15): attribute the microphone to the owner.
+        Read mic.pcm, run an energy VAD, and write speakers.jsonl lines so the
+        existing UI timeline labels mic speech with owner_name; system-audio
+        speech carries no line and falls through to acoustic clustering."""
+        mic_path = os.path.join(self.dir, "mic.pcm")
+        if not (os.path.isfile(mic_path) and os.path.getsize(mic_path) > 0):
+            return
+        try:
+            raw = np.fromfile(mic_path, dtype=np.int16)
+        except OSError:
+            return
+        if raw.size == 0:
+            return
+        x = raw.astype(np.float32) / 32768.0
+        vad = EnergyVad(0)
+        segments = []
+        n = len(x) // VAD_WINDOW * VAD_WINDOW
+        for off in range(0, n, CHUNK_SAMPLES):
+            chunk = x[off:min(n, off + CHUNK_SAMPLES)]
+            segments.extend(vad.accept(chunk))
+        segments.extend(vad.flush())
+        rec_start = self.rec_start or now_ms()
+        lines = []
+        for start_sample, seg in segments:
+            start_ms = rec_start + int(start_sample * 1000 / SAMPLE_RATE)
+            end_ms = rec_start + int((start_sample + len(seg)) * 1000 / SAMPLE_RATE)
+            lines.append({"t": start_ms, "speakers": [self.owner_name], "src": "local-mic", "lagMs": 0})
+            lines.append({"t": end_ms, "speakers": [], "src": "local-mic", "lagMs": 0})
+        for line in lines:
+            append_jsonl(self.paths["speakers"], line)
+        log(f"local timeline: {len(segments)} mic segment(s) attributed to {self.owner_name}")
+
     def _pid_alive(self, pid):
         if not os.path.isdir("/proc/self"):
             return True
@@ -1434,6 +1526,9 @@ class Transcriber:
     # ---- modes
 
     def _run_live(self):
+        if self.platform == "local":
+            self._read_bot()
+            self._build_local_timeline()
         pcm = PcmSource(self.paths["pcm"], self.checkpoint)
         vad = self.make_vad(self.checkpoint)
         log(f"VAD: {vad.name}; speakers: {self.effective_diarization}; GigaAM: {self.asr.url or 'gigaam.json'}")
@@ -1509,6 +1604,8 @@ class Transcriber:
 
     def _run_offline(self):
         bot = self._read_bot()
+        if self.platform == "local":
+            self._build_local_timeline()
         # The lossless recording (kept by keepRawAudio, or left by a live run that
         # never finalized) beats decoding the Opus archive, which never replaces it.
         if self._raw_pcm_complete(bot):
@@ -1691,7 +1788,7 @@ class Transcriber:
             "meetingId": self.meeting_id,
             "audioSec": round(self.audio_samples / SAMPLE_RATE, 3),
             "createdAt": now_ms(),
-            "asr": {"engine": "gigaam", "model": self.asr.model},
+            "asr": {"engine": self.engine, "model": getattr(self.asr, "model", None)},
             "diarization": mode,
             "speakers": speaker_summary(final),
             "segments": final,
