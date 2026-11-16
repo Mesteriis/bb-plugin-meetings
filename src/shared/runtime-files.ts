@@ -6,7 +6,7 @@ import { z } from "zod";
 export const MEETING_ID_PATTERN = /^mtg_[a-z0-9]{6,32}$/;
 export const meetingIdSchema = z.string().regex(MEETING_ID_PATTERN, "Invalid meeting id");
 
-export const PLATFORMS = ["zoom", "meet", "telemost", "jitsi", "mock"] as const;
+export const PLATFORMS = ["zoom", "meet", "telemost", "jitsi", "mock", "local"] as const;
 export const platformSchema = z.enum(PLATFORMS);
 export type Platform = z.infer<typeof platformSchema>;
 
@@ -23,6 +23,14 @@ export const transcriberConfigSchema = z
     keepRawAudio: z.boolean(),
     /** CPU threads for VAD/embeddings; 0 = auto. */
     threads: z.number().int().min(0).max(64),
+    /** ASR engine: "whisper" (local, macOS default) or "gigaam" (server). */
+    engine: z.enum(["whisper", "gigaam"]).optional(),
+    /** Language hint for ASR (e.g. "ru"); optional, default "ru". */
+    language: z.string().max(200).optional(),
+    /** Glossary of terms passed as the model's initial prompt; empty = none. */
+    glossary: z.string().max(4000).optional(),
+    /** Local recording: the microphone speaker's display name (default "Я"). */
+    ownerName: z.string().max(64).optional(),
   })
   .strict();
 export type TranscriberConfig = z.infer<typeof transcriberConfigSchema>;
@@ -249,7 +257,7 @@ export const transcriptSchema = z.object({
   meetingId: meetingIdSchema,
   audioSec: z.number(),
   createdAt: z.number(),
-  asr: z.object({ engine: z.literal("gigaam"), model: z.string().nullable() }),
+  asr: z.object({ engine: z.enum(["gigaam", "whisper"]), model: z.string().nullable() }),
   diarization: diarizationSchema,
   speakers: z.array(transcriptSpeakerSchema),
   segments: z.array(segmentSchema),

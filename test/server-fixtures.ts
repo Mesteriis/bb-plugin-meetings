@@ -48,6 +48,8 @@ export function envReport(overrides: Partial<EnvReport> = {}): EnvReport {
     setup: { phase: "idle", message: "", startedAt: null, finishedAt: null, logTail: "" },
     runtimeHash: "abc123",
     hostDataDir: "/home/bb/.bb/plugins/meetings/host-data",
+    platform: "linux",
+    arch: "x64",
     sudo: true,
     gigaam: { url: GIGAAM_URL, ready: true, detail: "ok" },
     chromePath: CHROME,

@@ -1132,7 +1132,7 @@ export class MeetingsService {
     }
     if (row.hasAudio) return this.retranscribe(id);
     return this.join({ url: row.url, title: row.title, botName: row.botName, source: row.source,
-      platform: row.platform === "mock" ? undefined : row.platform,
+      platform: row.platform === "mock" || row.platform === "local" ? undefined : row.platform,
       requestedByThreadId: row.requestedByThreadId, notify: row.notify,
       maxDurationMinutes: row.options.maxDurationMinutes, templateId: row.options.templateId,
       autoTranscribe: row.options.autoTranscribe, autoSummarize: row.options.autoSummarize,

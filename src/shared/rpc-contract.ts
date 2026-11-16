@@ -48,7 +48,7 @@ export const LIVE_STATUSES: ReadonlySet<MeetingStatus> = new Set([
 ]);
 export const TERMINAL_STATUSES: ReadonlySet<MeetingStatus> = new Set(["done", "failed", "cancelled"]);
 
-export const MEETING_SOURCES = ["agent", "cli", "ui", "calendar", "import"] as const;
+export const MEETING_SOURCES = ["agent", "cli", "ui", "calendar", "import", "local"] as const;
 export const meetingSourceSchema = z.enum(MEETING_SOURCES);
 export type MeetingSource = z.infer<typeof meetingSourceSchema>;
 

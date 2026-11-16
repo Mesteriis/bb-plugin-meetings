@@ -38,6 +38,12 @@ export interface HostPaths {
   readonly gigaamFile: string;
   /** PulseAudio client.conf with autospawn disabled, for the host's own pactl calls. */
   readonly pulseClientConf: string;
+  /** The local Whisper model directory (DESIGN §15). */
+  readonly whisperModel: string;
+  /** The compiled capture helper (local recording). */
+  readonly capture: string;
+  /** The capture helper's embedded Swift source. */
+  readonly captureSource: string;
   /** The bot's avatar and what is rendered from it (DESIGN §14). */
   readonly botDir: string;
   /** The normalized avatar: a square PNG. */
@@ -83,6 +89,9 @@ export function hostPaths(dataDir: string, runtimeHash: string = RUNTIME_HASH): 
     profiles,
     zoomProfile: path.join(profiles, "zoom"),
     gigaamFile: path.join(root, "gigaam.json"),
+    whisperModel: path.join(root, "models", "whisper-large-v3-turbo"),
+    capture: path.join(root, "bin", "capture"),
+    captureSource: path.join(runtime, "capture", "main.swift"),
     pulseClientConf: path.join(root, "pulse-client.conf"),
     botDir,
     avatar: path.join(botDir, "avatar.png"),
