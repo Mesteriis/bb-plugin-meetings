@@ -155,7 +155,7 @@ export function registerCli(bb: BbPluginApi, service: MeetingsService): void {
         }),
 
         join: cliCommand({
-          summary: "Send the notetaker bot to a Zoom, Google Meet, Telemost or Jitsi meeting, now or at a given time",
+          summary: "Send the notetaker bot to a Zoom, Google Meet, Telemost or Jitsi meeting (Linux only; use local recording on macOS)",
           positionals: [{ name: "url", description: "Meeting invite link (with its query) or a Zoom meeting number", required: true }],
           options: {
             title: { type: "string", description: "Meeting title (default: Zoom <number>)", placeholder: "TEXT" },
@@ -486,12 +486,12 @@ export function registerCli(bb: BbPluginApi, service: MeetingsService): void {
         }),
 
         doctor: cliCommand({
-          summary: "Check Chrome, Xvfb, PulseAudio, ffmpeg, the transcriber and GigaAM on the recording machine",
+          summary: "Check the recording machine: Chrome/Xvfb/PulseAudio/ffmpeg on Linux, Swift/Whisper/microphone on macOS",
           options: { json },
           run: (input) => guard(async () => {
             const report = await service.envReport(true);
             if (input.options.json) return outJson(report);
-            const lines = [`Recording environment: ${report.ready ? "ready" : "NOT READY"}`];
+            const lines = [`Recording environment: ${report.ready ? "ready" : "NOT READY"} (${report.platform}-${report.arch})`];
             for (const item of report.items) {
               const state = item.ok ? "ok" : item.required ? "MISSING" : "missing";
               lines.push(

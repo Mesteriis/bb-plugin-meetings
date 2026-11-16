@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Local recording on macOS (Apple silicon).** A second mode next to the Linux bot: no bot joins the call, so participants get no notice. The plugin detects that Zoom, Teams, Telegram, FaceTime or a browser call is using the microphone (Core Audio process list), records the microphone locally, and transcribes with a local Whisper large-v3-turbo (default) or GigaAM. Settings: enable, auto-record, app list, start/grace thresholds, owner display name, engine, language, glossary. `bb meetings doctor` and `setup` work on macOS; bot mode remains Linux-only and says so on a Mac. macOS 14.4+; the Microphone and System Audio Recording permissions are requested for the BB app. The Whisper model needs ~1.6 GB of disk.
+
 ## 0.3.1 — 2026-10-27
 
 - **Deaf-bot guard.** When the meeting shows people speaking but the bot records digital silence (seen on Zoom on 2026-10-27: computer audio "connected", indicators busy, recording and every WebRTC track exactly zero), the bot notices within ~45 s and recovers by itself: it rejoins the meeting audio twice (Zoom: default speaker, "Leave Computer Audio", Join Audio), then reloads the meeting page and joins again, waiting room included, while ffmpeg keeps recording. Still deaf: a warning «Бот не слышит участников встречи…» with what was tried shows on the live card and the detail page, the requesting thread gets one message, and the audio rejoin repeats every 3 min. The warning clears when sound returns. Silent meetings, sticky indicators (screen share) and a lone bot never trigger it. Every decision is in `events.jsonl`; tuning via `speakerSelectors.deafGuard`.

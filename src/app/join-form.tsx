@@ -168,6 +168,7 @@ export function JoinForm({ nav, onJoined }: { nav: MeetingsNav; onJoined: () => 
           {join.pending ? <Spinner /> : <Icon name="Mic" className="size-4" aria-hidden />}
           Подключить бота
         </Button>
+        <p className="text-xs text-muted-foreground">Бот подключается только на Linux. На macOS включите «Локальную запись» в настройках — плагин запишет встречу без бота.</p>
         {joined === null ? null : (
           <p role="status" className="text-sm text-muted-foreground">
             {joined.status === "scheduled" && joined.scheduledAt !== null

@@ -45,6 +45,8 @@ read with these tools goes to your model provider.
 - `meetings_save_summary`: store a Markdown summary on the meeting card.
 - `meetings_rename_speaker`: `Спикер 2` → a real name across one meeting.
 
+On macOS (Apple silicon, macOS 14.4+) the bot mode is Linux-only: use local recording instead (settings: enable «Локальная запись»; the plugin records the microphone when Zoom/Teams/Telegram/FaceTime or a browser call is detected, no bot joins, participants get no notice). `bb meetings doctor` and `bb meetings setup` work on the Mac.
+
 Everything else is in the CLI (`bb meetings --help`): `list`, `show`, `cancel`,
 `delete <id> --yes`, `retranscribe`, `logs`, `screenshot`, `import <file>`,
 `calendar`, `google`, `bot`, `accounts`, `analyze`, `templates`, `retry`, `zoom-login`, `doctor`, `setup`, `selftest`.

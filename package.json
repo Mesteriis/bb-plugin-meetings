@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Meetings",
-    "description": "Record Zoom, Google Meet, Telemost and Jitsi with local transcription, summary templates, action items and MCP.",
+    "description": "Record Zoom, Google Meet, Telemost and Jitsi (bot on Linux, or local recording on macOS Apple silicon) with local transcription, summary templates, action items and MCP.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -53,7 +53,7 @@
     "vaul": "^1.1.2",
     "vitest": "^5.0.4"
   },
-  "description": "Multi-platform meeting notetaker for bb: Zoom, Google Meet, Telemost and Jitsi; local transcription, templates, analysis, Q&A and MCP.",
+  "description": "Multi-platform meeting notetaker for bb: Zoom, Google Meet, Telemost and Jitsi (Linux bot + macOS local recording); local transcription, templates, analysis, Q&A and MCP.",
   "license": "MIT",
   "author": "AiXenix (https://aixenix.com)",
   "homepage": "https://github.com/AiXenix/bb-plugin-meetings#readme",
