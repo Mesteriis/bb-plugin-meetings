@@ -7,7 +7,7 @@ import type { RuntimeSnapshot } from "../shared/contract.js";
 import type { BotState } from "../shared/runtime-files.js";
 import { run } from "./exec.js";
 import { errorMessage, statOrNull, writeJsonAtomic } from "./fsutil.js";
-import { stepDetection, createDetectionState, type DetectionState } from "./local-detection.js";
+import { seedRecording, stepDetection, createDetectionState, type DetectionState } from "./local-detection.js";
 import { activeSources, localSourceBundles, type AudioClientProcess } from "./local-sources.js";
 import { childEnv, snapshot } from "./meetings.js";
 import { MEETING_FILES as F, meetingDir, type HostPaths } from "./paths.js";
@@ -19,6 +19,7 @@ export interface LocalPollOptions {
   readonly graceMs: number;
   /** Enabled appKeys; empty = all supported sources. */
   readonly apps: readonly string[] | null;
+  readonly recording: readonly string[];
 }
 
 export interface LocalPollResult {
@@ -59,7 +60,7 @@ export async function localPoll(paths: HostPaths, options: LocalPollOptions): Pr
   }
   const enabled = options.apps === null ? null : new Set(options.apps);
   const sources = filterApps(activeSources(processes), enabled);
-  detectionState ??= createDetectionState();
+  detectionState = seedRecording(detectionState ?? createDetectionState(), options.recording);
   const { state, events } = stepDetection(detectionState, sources, Date.now(), {
     startThresholdMs: options.startThresholdMs,
     graceMs: options.graceMs,

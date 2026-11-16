@@ -1,7 +1,8 @@
 // Local recording auto-start (DESIGN §15): the scheduler polls detection on a
 // macOS primary host and starts/stops one local meeting per source app.
 import { describe, expect, it, vi } from "vitest";
-import { envReport, hostCalls, load } from "./server-fixtures.js";
+import { createDetectionState } from "../src/host/local-detection.js";
+import { envReport, hostCalls, load, until } from "./server-fixtures.js";
 
 const T0 = Date.UTC(2026, 9, 13, 7, 0, 0);
 
@@ -44,6 +45,44 @@ describe("local recording auto-record", () => {
     }
     const local = service.list("all", 50, null).meetings.filter((m) => m.source === "local");
     expect(local).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("restart with a live row and the app gone stops the recording after the grace period", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { fake, service } = await load({ settings: macSettings() });
+    fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    fake.detectionDriven = true;
+    fake.detectionHeld.add("zoom");
+    for (let t = 1; t <= 6; t += 1) { vi.setSystemTime(start + t * 1000); await service.pollLocalDetection(); }
+    const meeting = service.list("all", 50, null).meetings.filter((m) => m.source === "local")[0]!;
+    expect(meeting.status).toBe("recording");
+    fake.detectionState = createDetectionState();
+    fake.detectionHeld.clear();
+    for (let t = 7; t <= 68; t += 1) { vi.setSystemTime(start + t * 1000); await service.pollLocalDetection(); }
+    const after = service.list("all", 50, null).meetings.find((m) => m.id === meeting.id)!;
+    expect(["recording", "joining", "starting", "waiting_room", "waiting_for_host"]).not.toContain(after.status);
+    vi.useRealTimers();
+  });
+
+  it("restart with a live row and the app still holding starts no second recording", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2026, 9, 13, 7, 0, 0);
+    vi.setSystemTime(start);
+    const { fake, service } = await load({ settings: macSettings() });
+    fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    fake.detectionDriven = true;
+    fake.detectionHeld.add("zoom");
+    for (let t = 1; t <= 6; t += 1) { vi.setSystemTime(start + t * 1000); await service.pollLocalDetection(); }
+    expect(service.list("all", 50, null).meetings.filter((m) => m.source === "local")).toHaveLength(1);
+    fake.detectionState = createDetectionState();
+    for (let t = 7; t <= 12; t += 1) { vi.setSystemTime(start + t * 1000); await service.pollLocalDetection(); }
+    const after = service.list("all", 50, null).meetings.filter((m) => m.source === "local");
+    expect(after).toHaveLength(1);
+    expect(after[0]!.status).toBe("recording");
+    expect(fake.localStartCalls).toHaveLength(1);
     vi.useRealTimers();
   });
 
@@ -138,6 +177,23 @@ describe("local recording auto-record", () => {
     // GET /audio?id=… streams audio.ogg through meeting.readFile.
     const read = fake.handle("meeting.readFile", { meetingId: meeting.id, file: "audio.ogg", offset: 0, length: 4096 }) as { base64: string | null };
     expect(read.base64).not.toBeNull();
+  });
+
+  it("Stop issued while local.start is in flight ends with a terminal row", async () => {
+    const { fake, service } = await loadMac();
+    fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const handle = fake.handle.bind(fake);
+    fake.handle = (method, input) => (method === "local.start" ? gate.then(() => handle(method, input)) : handle(method, input));
+    const poll = service.pollLocalDetection();
+    await until(() => service.list("all", 50, null).meetings.some((m) => m.source === "local"));
+    const id = service.list("all", 50, null).meetings.find((m) => m.source === "local")!.id;
+    const stop = service.stop(id);
+    release();
+    await poll;
+    const after = await stop;
+    expect(["recording", "joining", "starting", "waiting_room", "waiting_for_host"]).not.toContain(after.status);
   });
 
   it("a host poll error does not stop a running recording", async () => {

@@ -1093,7 +1093,7 @@ export class MeetingsService {
     try {
       poll = await this.call(
         "local.poll",
-        { startThresholdMs: settings.localStartThresholdSec * 1000, graceMs: settings.localGraceSec * 1000, apps: parseLocalApps(settings.localApps) },
+        { startThresholdMs: settings.localStartThresholdSec * 1000, graceMs: settings.localGraceSec * 1000, apps: parseLocalApps(settings.localApps), recording: this.localRecordingApps() },
         { signal },
       );
     } catch (error) {
@@ -1111,6 +1111,14 @@ export class MeetingsService {
 
   private localUrl(appKey: string): string {
     return "local://" + appKey;
+  }
+
+  /** appKeys of live local recordings (seeded into the host detection state on every poll). */
+  private localRecordingApps(): string[] {
+    return this.repo
+      .meetingsWithStatus([...LIVE_STATUSES])
+      .filter((row) => row.source === "local" && row.url.startsWith("local://"))
+      .map((row) => row.url.slice("local://".length));
   }
 
   private async startLocalRecording(appKey: string, label: string, settings: MeetingsSettings, gigaamUrl: string | null, signal?: AbortSignal): Promise<void> {
@@ -1137,6 +1145,7 @@ export class MeetingsService {
     });
     this.publishMeeting(id);
     this.starting.add(id);
+    const settle = this.trackStart(id);
     try {
       const hostId = await this.primaryHostId();
       const snapshot = await this.call(
@@ -1167,6 +1176,7 @@ export class MeetingsService {
       this.publishMeeting(id);
     } finally {
       this.starting.delete(id);
+      settle();
     }
     this.wake();
   }

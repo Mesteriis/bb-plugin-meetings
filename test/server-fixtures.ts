@@ -14,7 +14,7 @@ import {
   type TranscriberState,
 } from "../src/shared/runtime-files.js";
 import { createMeetingsPlugin } from "../server.js";
-import { createDetectionState, stepDetection, type DetectionState } from "../src/host/local-detection.js";
+import { createDetectionState, seedRecording, stepDetection, type DetectionState } from "../src/host/local-detection.js";
 import type { GoogleEndpoints } from "../src/server/google-auth.js";
 import type { GoogleEvent } from "../src/server/google-calendar.js";
 import type { MeetingsService } from "../src/server/service.js";
@@ -293,6 +293,7 @@ export class FakeRuntime {
       case "local.poll": {
         if (this.localPollError !== null) throw new Error(this.localPollError);
         if (!this.detectionDriven) return this.localPollResult;
+        this.detectionState = seedRecording(this.detectionState, (args.recording as string[]) ?? []);
         const sources = [...this.detectionHeld].map((appKey) => ({ appKey, label: appKey }));
         const { state, events } = stepDetection(this.detectionState, sources, Date.now(), {
           startThresholdMs: args.startThresholdMs as number,
