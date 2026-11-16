@@ -64,53 +64,15 @@ func propertyString(_ object: AudioObjectID, _ selector: AudioObjectPropertySele
   return value?.takeRetainedValue() as String?
 }
 
-func shell(_ args: [String]) -> String {
-  let p = Process()
-  p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-  p.arguments = args
-  let pipe = Pipe()
-  p.standardOutput = pipe
-  p.standardError = FileHandle.nullDevice
-  do { try p.run(); p.waitUntilExit() } catch { return "" }
-  return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-}
-
-/// Walk parent pids up to an .app bundle and return its bundle id (C12).
-func owningAppBundleId(_ pid: pid_t) -> String? {
-  var current = pid
-  for _ in 0 ..< 20 {
-    let command = shell(["ps", "-o", "command=", "-p", String(current)]).trimmingCharacters(in: .whitespacesAndNewlines)
-    if let range = command.range(of: ".app/Contents/MacOS/") {
-      let appPath = String(command[..<range.lowerBound]) + ".app"
-      let mdls = shell(["mdls", "-name", "kMDItemCFBundleIdentifier", appPath])
-      if let eq = mdls.range(of: "=") {
-        let value = mdls[eq.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-          .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-        if !value.isEmpty && value != "(null)" { return value }
-      }
-    }
-    let ppidText = shell(["ps", "-o", "ppid=", "-p", String(current)]).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let ppid = pid_t(ppidText), ppid > 1, ppid != current else { break }
-    current = ppid
-  }
-  return nil
-}
-
 func runDetect() {
   var rows: [[String: Any]] = []
   for object in processList() {
-    let pid = propertyInt(object, kAudioProcessPropertyPID)
-    let bundleId = propertyString(object, kAudioProcessPropertyBundleID) ?? ""
-    var row: [String: Any] = [
-      "pid": pid,
-      "bundleId": bundleId,
+    rows.append([
+      "pid": propertyInt(object, kAudioProcessPropertyPID),
+      "bundleId": propertyString(object, kAudioProcessPropertyBundleID) ?? "",
       "input": propertyBool(object, kAudioProcessPropertyIsRunningInput),
       "output": propertyBool(object, kAudioProcessPropertyIsRunningOutput),
-    ]
-    if bundleId.hasPrefix("com.apple.WebKit"), let owner = owningAppBundleId(pid_t(pid)) {
-      row["owner"] = owner
-    }
-    rows.append(row)
+    ])
   }
   if let data = try? JSONSerialization.data(withJSONObject: rows, options: []) {
     print(String(data: data, encoding: .utf8) ?? "[]")
@@ -639,6 +601,7 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
   }
 
   var lastBeat = Date()
+  var resolvedLogged = false
   while !stopRequested {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
     let now = Date()
@@ -647,15 +610,15 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
       stateJson(meetingDir, "in_meeting", startedAt, nil,
                 audioSeconds: Double(micWriter.bytes) / 2.0 / Double(SAMPLE_RATE),
                 audioBytes: micWriter.bytes + sysWriter.bytes)
+      // Re-resolve the app's processes at most once a second; log the fallback resolution once.
+      if !hadTappedOutput && !resolvedLogged && !resolveTapObjects(bundleIds).isEmpty {
+        resolvedLogged = true
+        appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "info", "msg": "a matching process is now playing; the tap is still the global fallback in this build"])
+      }
     }
     // The host writes stop.request to ask us to stop (the same signal the bot polls).
     if FileManager.default.fileExists(atPath: meetingDir + "/stop.request") {
       stopRequested = true
-    }
-    // Re-resolve the app's processes while recording: if the fallback tap was used and the
-    // app now plays, note it (the page shows the fallback until then).
-    if !hadTappedOutput && !resolveTapObjects(bundleIds).isEmpty {
-      appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "info", "msg": "a matching process is now playing; the tap is still the global fallback in this build"])
     }
   }
 

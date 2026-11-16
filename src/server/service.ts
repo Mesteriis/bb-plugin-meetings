@@ -1128,10 +1128,10 @@ export class MeetingsService {
     return "local://" + appKey;
   }
 
-  /** appKeys of live local recordings (seeded into the host detection state on every poll). */
+  /** appKeys of local rows that are actually recording (seeded into the host detection state). */
   private localRecordingApps(): string[] {
     return this.repo
-      .meetingsWithStatus([...LIVE_STATUSES])
+      .meetingsWithStatus(["recording"])
       .filter((row) => row.source === "local" && row.url.startsWith("local://"))
       .map((row) => row.url.slice("local://".length));
   }

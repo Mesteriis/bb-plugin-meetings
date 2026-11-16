@@ -1078,8 +1078,9 @@ the system audio) locally, then transcribes with the same pipeline.
   PID/bundleID/IsRunningInput/IsRunningOutput). src/host/local-sources.ts
   maps bundle ids to sources — Zoom (us.zoom.xos; us.zoom.caphost appears
   only during a call), Teams, Telegram, FaceTime, and every supported browser
-  (Chrome, Safari/WebKit, Arc, Dia, Yandex, Firefox, Edge) as one "browser"
-  source. src/host/local-detection.ts is a pure, clock-injected state machine:
+  (Chrome, Arc, Dia, Yandex, Firefox, Edge) as one "browser" source. Safari
+  is not supported: its WebKit helpers are launchd-spawned XPC services (ppid 1),
+  so their owning app cannot be resolved and a Safari call cannot be detected. src/host/local-detection.ts is a pure, clock-injected state machine:
   a source starts when it holds the microphone continuously for
   localStartThresholdSec (default 5 s) and ends when it has released it for
   localGraceSec (default 60 s). Flapping input resets the hold timer; two
