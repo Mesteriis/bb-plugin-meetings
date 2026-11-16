@@ -14,6 +14,7 @@ import {
   type TranscriberState,
 } from "../src/shared/runtime-files.js";
 import { createMeetingsPlugin } from "../server.js";
+import { createDetectionState, stepDetection, type DetectionState } from "../src/host/local-detection.js";
 import type { GoogleEndpoints } from "../src/server/google-auth.js";
 import type { GoogleEvent } from "../src/server/google-calendar.js";
 import type { MeetingsService } from "../src/server/service.js";
@@ -119,6 +120,11 @@ export class FakeRuntime {
   ensureCalls: Array<{ meetingId: string; mode: string }> = [];
   ensureTranscriberArgs: Array<Record<string, unknown>> = [];
   localPollResult: { supported: boolean; detected: { appKey: string; label: string }[]; started: { appKey: string; label: string }[]; ended: { appKey: string; label: string }[]; error: string | null } = { supported: true, detected: [], started: [], ended: [], error: null };
+  /** Real detection state machine, fed by detectionHeld; local.poll advances it with Date.now(). */
+  detectionHeld = new Set<string>();
+  detectionState: DetectionState = createDetectionState();
+  /** When true, local.poll runs the real state machine instead of returning localPollResult. */
+  detectionDriven = false;
   localStartCalls: Array<{ meetingId: string; appKey: string; engine: string; glossary: string; ownerName: string }> = [];
   localPollError: string | null = null;
   controlSeq = 0;
@@ -286,7 +292,20 @@ export class FakeRuntime {
         return { deleted: this.meetings.delete(args.meetingId as string) };
       case "local.poll": {
         if (this.localPollError !== null) throw new Error(this.localPollError);
-        return this.localPollResult;
+        if (!this.detectionDriven) return this.localPollResult;
+        const sources = [...this.detectionHeld].map((appKey) => ({ appKey, label: appKey }));
+        const { state, events } = stepDetection(this.detectionState, sources, Date.now(), {
+          startThresholdMs: args.startThresholdMs as number,
+          graceMs: args.graceMs as number,
+        });
+        this.detectionState = state;
+        return {
+          supported: true,
+          detected: sources,
+          started: events.filter((event) => event.type === "started").map((event) => ({ appKey: event.appKey, label: event.label })),
+          ended: events.filter((event) => event.type === "ended").map((event) => ({ appKey: event.appKey, label: event.label })),
+          error: null,
+        };
       }
       case "local.start": {
         const id = args.meetingId as string;
