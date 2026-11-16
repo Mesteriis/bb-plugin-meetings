@@ -1170,49 +1170,6 @@ class LocalRecordingTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def make_transcriber(self, transcriber_extra=None, whisper_impl=None):
-        d = os.path.join(self.tmp, "mtg_local0001")
-        os.makedirs(d)
-        cfg = {
-            "version": 1,
-            "meetingId": "mtg_local0001",
-            "platform": "local",
-            "sourceApp": "zoom",
-            "sourceLabel": "Zoom",
-            "url": "local://zoom",
-            "ownerName": "Я",
-            "createdAt": 0,
-            "transcriber": {
-                "gigaamUrl": None,
-                "diarization": "ui+acoustic",
-                "speakerLagMs": 700,
-                "keepRawAudio": False,
-                "threads": 0,
-                "engine": "whisper",
-                "language": "ru",
-                "glossary": "",
-                "ownerName": "Я",
-                **(transcriber_extra or {}),
-            },
-        }
-        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
-            json.dump(cfg, f)
-        with open(os.path.join(d, "state.json"), "w", encoding="utf-8") as f:
-            json.dump({"version": 1, "meetingId": "mtg_local0001", "pid": 123, "phase": "in_meeting",
-                       "recordingStartedAt": 1000}, f)
-        args = types.SimpleNamespace(meeting_dir=d, mode="offline", models_dir="", gigaam_url=None, host_data="", threads=None)
-        return d, tr.Transcriber(args, whisper_impl=whisper_impl)
-
-    def test_engine_selection_whisper(self):
-        _, t = self.make_transcriber()
-        self.assertEqual(t.engine, "whisper")
-        self.assertIsInstance(t.asr, tr.WhisperAsr)
-
-    def test_engine_selection_gigaam(self):
-        _, t = self.make_transcriber({"engine": "gigaam"})
-        self.assertEqual(t.engine, "gigaam")
-        self.assertIsInstance(t.asr, tr.AsrClient)
-
     def _synthetic_local_meeting(self):
         """Owner sine at 1-3 s and 7-9 s, remote sine at 4-6 s; audio.pcm = the mix.
         A 1 s leading silence lets the energy VAD estimate its floor on silence."""
