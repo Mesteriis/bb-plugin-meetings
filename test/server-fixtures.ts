@@ -117,6 +117,9 @@ export class FakeRuntime {
   failStart: string | null = null;
   profile = { exists: false, signedIn: false, path: "/home/bb/.bb/plugins/meetings/host-data/profiles/zoom", updatedAt: null as number | null };
   ensureCalls: Array<{ meetingId: string; mode: string }> = [];
+  localPollResult: { supported: boolean; detected: { appKey: string; label: string }[]; started: { appKey: string; label: string }[]; ended: { appKey: string; label: string }[]; error: string | null } = { supported: true, detected: [], started: [], ended: [], error: null };
+  localStartCalls: Array<{ meetingId: string; appKey: string }> = [];
+  localPollError: string | null = null;
   controlSeq = 0;
   viewers: Array<{ meetingId: string; untilMs: number }> = [];
   /** Called on every meeting.status poll, to script transitions. */
@@ -279,6 +282,28 @@ export class FakeRuntime {
         return { jpegBase64: this.avatar.hasAvatar ? Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]).toString("base64") : null };
       case "meeting.delete":
         return { deleted: this.meetings.delete(args.meetingId as string) };
+      case "local.poll": {
+        if (this.localPollError !== null) throw new Error(this.localPollError);
+        return this.localPollResult;
+      }
+      case "local.start": {
+        const id = args.meetingId as string;
+        this.localStartCalls.push({ meetingId: id, appKey: args.appKey as string });
+        this.meetings.set(id, {
+          config: {} as BotConfig,
+          exists: true,
+          bot: botState(id, { phase: "in_meeting", recordingStartedAt: 1_000, detail: "Recording locally" }),
+          botAlive: true,
+          transcriber: null,
+          transcriberAlive: false,
+          segments: [],
+          final: false,
+          audio: Buffer.alloc(1000, 1),
+          screenshot: null,
+          screenshotMtime: null,
+        });
+        return this.snapshot(id);
+      }
       case "runtime.list":
         return { meetingIds: [...this.meetings.keys()] };
       default:
