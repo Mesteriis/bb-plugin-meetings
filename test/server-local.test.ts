@@ -39,7 +39,7 @@ describe("local recording auto-record", () => {
     expect(local[0]!.platform).toBe("local");
     expect(local[0]!.url).toBe("local://zoom");
     expect(local[0]!.status).toBe("recording");
-    expect(fake.localStartCalls).toEqual([{ meetingId: local[0]!.id, appKey: "zoom" }]);
+    expect(fake.localStartCalls[0]).toMatchObject({ meetingId: local[0]!.id, appKey: "zoom" });
   });
 
   it("stops the recording when the meeting ends", async () => {
@@ -77,6 +77,21 @@ describe("local recording auto-record", () => {
     fake.env = envReport({ platform: "linux", arch: "x64" });
     await service.tick();
     expect(hostCalls(harness, "local.poll")).toHaveLength(0);
+  });
+
+  it("keeps the local speech settings through start and retranscribe", async () => {
+    const loaded = await load({ settings: { ...macSettings(), localGlossary: "термин", localOwnerName: "Я", localLanguage: "ru" }, now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.tick();
+    expect(loaded.fake.localStartCalls[0]).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
+    const meeting = loaded.service.list("all", 50, null).meetings.filter((m) => m.source === "local")[0]!;
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [], ended: [started("zoom", "Zoom")], error: null };
+    await loaded.service.tick();
+    await loaded.service.retranscribe(meeting.id);
+    const ensure = loaded.fake.ensureCalls.filter((c) => c.meetingId === meeting.id && c.mode === "offline");
+    expect(ensure).toHaveLength(1);
+    expect(ensure[0]!.transcriber).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
   });
 
   it("serves the local recording's audio through the detail page route", async () => {

@@ -31,6 +31,8 @@ export const transcriberConfigSchema = z
     glossary: z.string().max(4000).optional(),
     /** Local recording: the microphone speaker's display name (default "Я"). */
     ownerName: z.string().max(64).optional(),
+    /** Local recording: the directory of the downloaded Whisper model (host path). */
+    whisperModel: z.string().max(4096).optional(),
   })
   .strict();
 export type TranscriberConfig = z.infer<typeof transcriberConfigSchema>;

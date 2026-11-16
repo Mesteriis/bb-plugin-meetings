@@ -145,6 +145,7 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
       language: input.language,
       glossary: input.glossary,
       ownerName: input.ownerName,
+      whisperModel: paths.whisperModel,
     },
   };
   await writeJsonAtomic(path.join(dir, F.config), config);

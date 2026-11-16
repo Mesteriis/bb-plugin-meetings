@@ -717,6 +717,9 @@ class AsrClient:
         self._model_checked = False
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+    def describe(self):
+        return "GigaAM: " + (self.url or "gigaam.json")
+
     def discovered(self):
         obj = read_json(self.discovery_file) if self.discovery_file else None
         return normalize_url(obj.get("url")) if obj else None
@@ -862,9 +865,10 @@ class WhisperAsr:
 
     DEFAULT_REPO = "mlx-community/whisper-large-v3-turbo"
 
-    def __init__(self, language, glossary, stop, on_status, transcribe_impl=None):
+    def __init__(self, language, glossary, stop, on_status, transcribe_impl=None, model_path=None):
         """transcribe_impl (test seam): callable (audio, language, initial_prompt) -> dict or str.
-        None = the real mlx_whisper.transcribe. Injected by tests, never by the runner."""
+        None = the real mlx_whisper.transcribe. Injected by tests, never by the runner.
+        model_path: a local directory with the MLX weights, used instead of the HF repo id."""
         self.language = language or None
         self.glossary = glossary
         self.stop = stop
@@ -872,8 +876,11 @@ class WhisperAsr:
         self._impl = None
         self._transcribe_impl = transcribe_impl
         self.model = None
-        self.repo = os.environ.get("MEETINGS_WHISPER_MODEL") or self.DEFAULT_REPO
+        self.repo = model_path or os.environ.get("MEETINGS_WHISPER_MODEL") or self.DEFAULT_REPO
         self._lock = threading.Lock()
+
+    def describe(self):
+        return "Whisper " + self.repo
 
     def _load(self):
         if self._impl is not None:
@@ -1260,7 +1267,9 @@ def default_workers():
 
 
 class Transcriber:
-    def __init__(self, args):
+    def __init__(self, args, whisper_impl=None):
+        """whisper_impl (test seam): the transcribe callable injected into WhisperAsr.
+        None = the real mlx_whisper.transcribe. Injected by tests, never by the runner."""
         self.dir = os.path.abspath(args.meeting_dir)
         self.mode = args.mode
         self.host_data = args.host_data or self._default_host_data()
@@ -1312,7 +1321,7 @@ class Transcriber:
         self.timeline = SpeakerTimeline(self.paths["speakers"], self.lag_ms)
         discovery = os.path.join(self.host_data, "gigaam.json") if self.host_data else None
         if self.engine == "whisper":
-            self.asr = WhisperAsr(self.language, self.glossary, self.stop, self._asr_status)
+            self.asr = WhisperAsr(self.language, self.glossary, self.stop, self._asr_status, transcribe_impl=whisper_impl, model_path=tr.get("whisperModel"))
         else:
             self.asr = AsrClient(primary_url, discovery, self.stop, self._asr_status)
 
@@ -1472,51 +1481,56 @@ class Transcriber:
             self.rec_start = float(bot["recordingStartedAt"])
         return bot
 
-    def _build_local_timeline(self):
-        """Local recording (DESIGN §15): attribute the microphone to the owner.
-        Read mic.pcm, run an energy VAD, and write speakers.jsonl lines so the
-        existing UI timeline labels mic speech with owner_name; system-audio
-        speech carries no line and falls through to acoustic clustering."""
-        mic_path = os.path.join(self.dir, "mic.pcm")
-        if not (os.path.isfile(mic_path) and os.path.getsize(mic_path) > 0):
-            return
+    def _pcm_energy(self, name, a, b):
+        """Mean square of a meeting stream (mic.pcm / system.pcm) over [a, b] seconds.
+        0.0 when the file is absent or has no samples there yet (live mode)."""
+        path = os.path.join(self.dir, name)
+        if not os.path.isfile(path):
+            return 0.0
+        start = int(a * SAMPLE_RATE)
+        end = int(b * SAMPLE_RATE)
+        if end <= start:
+            return 0.0
         try:
-            raw = np.fromfile(mic_path, dtype=np.int16)
+            data = np.fromfile(path, dtype=np.int16, offset=start * 2, count=end - start)
         except OSError:
-            return
-        if raw.size == 0:
-            return
-        x = raw.astype(np.float32) / 32768.0
-        vad = EnergyVad(0)
-        segments = []
-        n = len(x) // VAD_WINDOW * VAD_WINDOW
-        for off in range(0, n, CHUNK_SAMPLES):
-            chunk = x[off:min(n, off + CHUNK_SAMPLES)]
-            segments.extend(vad.accept(chunk))
-        segments.extend(vad.flush())
-        rec_start = self.rec_start or now_ms()
-        lines = []
-        for start_sample, seg in segments:
-            start_ms = rec_start + int(start_sample * 1000 / SAMPLE_RATE)
-            end_ms = rec_start + int((start_sample + len(seg)) * 1000 / SAMPLE_RATE)
-            lines.append({"t": start_ms, "speakers": [self.owner_name], "src": "local-mic", "lagMs": 0})
-            lines.append({"t": end_ms, "speakers": [], "src": "local-mic", "lagMs": 0})
-        for line in lines:
-            append_jsonl(self.paths["speakers"], line)
-        log(f"local timeline: {len(segments)} mic segment(s) attributed to {self.owner_name}")
+            return 0.0
+        if data.size == 0:
+            return 0.0
+        x = data.astype(np.float32) / 32768.0
+        return float(np.mean(x * x))
+
+    def _local_owner_for(self, a, b):
+        """The speaker of a local-recording segment: the owner when the microphone
+        energy at that position is at least the system audio's, else None (remote,
+        to be resolved by acoustic clustering)."""
+        mic = self._pcm_energy("mic.pcm", a, b)
+        sys = self._pcm_energy("system.pcm", a, b)
+        if mic <= 0.0 and sys <= 0.0:
+            return None
+        return self.owner_name if mic >= sys else None
 
     def _pid_alive(self, pid):
-        if not os.path.isdir("/proc/self"):
-            return True
+        """True when pid is live and its command line still names this meeting dir.
+        /proc on Linux; ps on macOS (no /proc). A reused pid never mentions the dir."""
+        if os.path.isdir("/proc/self"):
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmdline = f.read()
+            except FileNotFoundError:
+                return False
+            except OSError:
+                return os.path.exists(f"/proc/{pid}")
+            return bool(cmdline) and os.path.basename(self.dir).encode() in cmdline
         try:
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                cmdline = f.read()
-        except FileNotFoundError:
-            return False
+            os.kill(pid, 0)
         except OSError:
-            return os.path.exists(f"/proc/{pid}")
-        # Zombies have an empty cmdline; a reused pid will not mention this meeting.
-        return bool(cmdline) and os.path.basename(self.dir).encode() in cmdline
+            return False
+        try:
+            out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5)
+            return os.path.basename(self.dir) in out.stdout
+        except (OSError, subprocess.SubprocessError):
+            return True
 
     def _bot_finished(self, bot, elapsed):
         if bot is None:
@@ -1531,10 +1545,9 @@ class Transcriber:
     def _run_live(self):
         if self.platform == "local":
             self._read_bot()
-            self._build_local_timeline()
         pcm = PcmSource(self.paths["pcm"], self.checkpoint)
         vad = self.make_vad(self.checkpoint)
-        log(f"VAD: {vad.name}; speakers: {self.effective_diarization}; GigaAM: {self.asr.url or 'gigaam.json'}")
+        log(f"VAD: {vad.name}; speakers: {self.effective_diarization}; ASR: {self.asr.describe()}")
         t0 = time.monotonic()
         last_size, last_growth, tried_ogg = None, time.monotonic(), False
         self.set_phase("waiting_audio", "waiting for audio")
@@ -1607,8 +1620,6 @@ class Transcriber:
 
     def _run_offline(self):
         bot = self._read_bot()
-        if self.platform == "local":
-            self._build_local_timeline()
         # The lossless recording (kept by keepRawAudio, or left by a live run that
         # never finalized) beats decoding the Opus archive, which never replaces it.
         if self._raw_pcm_complete(bot):
@@ -1625,7 +1636,7 @@ class Transcriber:
         pcm = PcmSource(source, 0)
         self.audio_samples = (pcm.size() or 0) // 2
         vad = self.make_vad(0)
-        log(f"VAD: {vad.name}; speakers: {self.effective_diarization}; GigaAM: {self.asr.url or 'gigaam.json'}; "
+        log(f"VAD: {vad.name}; speakers: {self.effective_diarization}; ASR: {self.asr.describe()}; "
             f"audio {self.audio_samples / SAMPLE_RATE:.1f}s")
         self.set_phase("live", "transcribing (offline)")
         while self._consume(pcm, vad, READ_MAX_SAMPLES):
@@ -1701,10 +1712,10 @@ class Transcriber:
 
     def _process_speech(self, start, x):
         """Split a VAD segment at speaker changes (UI first, else voice), then transcribe the pieces."""
-        if self.mode == "live":
+        if self.mode == "live" and self.platform != "local":
             self.timeline.poll()
         offsets = []
-        if self.effective_diarization != "acoustic":
+        if self.effective_diarization != "acoustic" and self.platform != "local":
             offsets = ui_split_offsets(self.timeline, self.rec_start, start, x)
         bounds = [0] + offsets + [len(x)]
         for a, b in zip(bounds, bounds[1:]):
@@ -1719,6 +1730,8 @@ class Transcriber:
         """Look for voice changes unless the UI confidently names a single speaker."""
         if self.embedder is None or length < 2 * MIN_SPLIT_PIECE_S * SAMPLE_RATE:
             return False
+        if self.platform == "local":
+            return self._local_owner_for(start / SAMPLE_RATE, (start + length) / SAMPLE_RATE) is None
         if self.effective_diarization == "acoustic":
             return True
         a = start / SAMPLE_RATE
@@ -1749,6 +1762,11 @@ class Transcriber:
         self.save(force=True)
 
     def _live_speaker(self, a, b):
+        if self.platform == "local":
+            owner = self._local_owner_for(a, b)
+            if owner is not None:
+                return "ui:" + owner, owner, "ui"
+            return UNKNOWN_KEY, UNKNOWN_LABEL, "none"
         if self.effective_diarization != "acoustic":
             name, _ = top_speaker(ui_coverage(self.timeline, self.rec_start, a, b))
             if name:
@@ -1763,8 +1781,14 @@ class Transcriber:
         started = time.monotonic()
         self._read_bot()
         segments = load_segments(self.paths["segments"], self.next_id)
-        timeline = SpeakerTimeline(self.paths["speakers"], self.lag_ms).load_all()
-        coverages = [ui_coverage(timeline, self.rec_start, s["start"], s["end"]) for s in segments]
+        if self.platform == "local":
+            coverages = []
+            for s in segments:
+                owner = self._local_owner_for(s["start"], s["end"])
+                coverages.append({owner: 1.0} if owner else {})
+        else:
+            timeline = SpeakerTimeline(self.paths["speakers"], self.lag_ms).load_all()
+            coverages = [ui_coverage(timeline, self.rec_start, s["start"], s["end"]) for s in segments]
         mode = self.effective_diarization
         own_clusters = [None] * len(segments)
         if mode != "ui":

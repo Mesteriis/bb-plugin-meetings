@@ -556,6 +556,19 @@ export class MeetingsService {
     };
   }
 
+  /** The transcriber config for a specific meeting: a local recording keeps its engine, language, glossary and owner name. */
+  transcriberConfigFor(row: MeetingRow, settings: MeetingsSettings, gigaamUrl: string | null): TranscriberConfig {
+    const base = this.transcriberConfig(settings, gigaamUrl);
+    if (row.source !== "local") return base;
+    return {
+      ...base,
+      engine: settings.localEngine as "whisper" | "gigaam",
+      language: settings.localLanguage.trim() || "ru",
+      glossary: settings.localGlossary,
+      ownerName: settings.localOwnerName.trim() || "Я",
+    };
+  }
+
   /** GigaAM URL on the host (also refreshes <hostData>/gigaam.json for running transcribers); cached briefly. */
   private async discoverGigaam(settings: MeetingsSettings, hostId: string, signal?: AbortSignal): Promise<string | null> {
     const configuredUrl = settings.gigaamUrl.trim();
@@ -877,7 +890,7 @@ export class MeetingsService {
       const gigaamUrl = await this.discoverGigaam(settings, hostId, signal);
       const after = await this.call(
         "meeting.ensureTranscriber",
-        { meetingId: row.id, mode: "live", transcriber: this.transcriberConfig(settings, gigaamUrl) },
+        { meetingId: row.id, mode: "live", transcriber: this.transcriberConfigFor(row, settings, gigaamUrl) },
         { hostId, signal },
       );
       if (after.transcriberAlive) this.bb.log.info(`Started the transcriber for ${row.id}`);
@@ -1293,7 +1306,7 @@ export class MeetingsService {
     return this.withLock(id, async () => {
       await this.call(
         "meeting.ensureTranscriber",
-        { meetingId: id, mode: "offline", transcriber: this.transcriberConfig(settings, gigaamUrl) },
+        { meetingId: id, mode: "offline", transcriber: this.transcriberConfigFor(row, settings, gigaamUrl) },
         { hostId, timeoutMs: 30_000 },
       );
       this.repo.deleteSegments(id);
