@@ -609,6 +609,9 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
   var systemAggID: AudioObjectID? = nil
   var systemIOProcID: AudioDeviceIOProcID? = nil
   let hadTappedOutput = !resolveTapObjects(bundleIds).isEmpty
+  if !hadTappedOutput {
+    appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "warn", "msg": "system tap fell back to all system audio (no matching process yet)"])
+  }
   if let (tapID, uid) = createSystemTap(bundleIds), let aggID = createAggregate(tapUID: uid) {
     systemTapID = tapID
     systemAggID = aggID
@@ -648,6 +651,11 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
     // The host writes stop.request to ask us to stop (the same signal the bot polls).
     if FileManager.default.fileExists(atPath: meetingDir + "/stop.request") {
       stopRequested = true
+    }
+    // Re-resolve the app's processes while recording: if the fallback tap was used and the
+    // app now plays, note it (the page shows the fallback until then).
+    if !hadTappedOutput && !resolveTapObjects(bundleIds).isEmpty {
+      appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "info", "msg": "a matching process is now playing; the tap is still the global fallback in this build"])
     }
   }
 

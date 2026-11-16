@@ -168,7 +168,7 @@ describe("local recording auto-record", () => {
     expect(loaded.fake.ensureTranscriberArgs.at(-1)).toMatchObject({ engine: "whisper", glossary: "термин", ownerName: "Я" });
   });
 
-  it("serves the local recording's audio through the detail page route", async () => {
+  it("a local recording has audio and meeting.readFile serves audio.ogg bytes", async () => {
     const { fake, service } = await loadMac();
     fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
     await service.pollLocalDetection();
