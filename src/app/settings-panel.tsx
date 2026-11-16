@@ -8,7 +8,7 @@ import { IntegrationsPanel } from "./integrations-panel";
 import { useMeetingsRpc } from "./rpc";
 import type { MeetingsNav } from "./route";
 import { TemplatesPanel } from "./templates-panel";
-import { ErrorText, Spinner } from "./ui";
+import { ErrorText, Notice, Spinner } from "./ui";
 import { ZoomAccountCard } from "./zoom-card";
 
 export type SettingsValues = Record<string, string | number | boolean | null | undefined>;
@@ -27,10 +27,14 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
   const [patch, setPatch] = useState<SettingsValues>({});
   const [saved, setSaved] = useState(false);
   const [microphones, setMicrophones] = useState<readonly string[]>([]);
+  // null until the recording machine answered: the accounts tab waits for it.
+  const [hostPlatform, setHostPlatform] = useState<string | null>(null);
   const load = useAsyncAction(async () => {
     setSettings((await rpc.call("notetaker.settings", {})).settings as SettingsValues);
     // The device list is a convenience: without it the saved name is still shown and kept.
-    setMicrophones((await rpc.call("env.status").catch(() => null))?.env?.inputDevices ?? []);
+    const env = (await rpc.call("env.status").catch(() => null))?.env ?? null;
+    setMicrophones(env?.inputDevices ?? []);
+    setHostPlatform(env?.platform ?? "unknown");
   });
   const refresh = load.run;
   useEffect(() => { void refresh(); }, [refresh]);
@@ -126,7 +130,13 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
         <Field label="Запрос агенту после встречи"><textarea rows={4} className={`${fieldClass} resize-y text-xs`} value={String(value("autoSummaryPrompt") ?? "")} onChange={event => update("autoSummaryPrompt", event.target.value)} /></Field>
       </> : null}
       {tab === "templates" && settings ? <TemplatesPanel defaultId={String(value("summaryTemplateId") ?? "executive")} onDefault={async id => savePatch({ summaryTemplateId: id })} /> : null}
-      {tab === "accounts" ? <><ZoomAccountCard nav={nav} /><ProviderAccountCards nav={nav} /></> : null}
+      {tab === "accounts" && hostPlatform === "darwin" ? (
+        <Notice tone="info" title="На этом Mac вход не нужен">
+          <p>Аккаунты Zoom, Google Meet и Телемоста нужны только боту: он подключается к встрече через собственный Google Chrome и работает только на Linux.</p>
+          <p>Здесь встречи записываются локально. Вы участвуете в звонке сами, в приложении или в своём браузере (Dia, Arc, Chrome, Яндекс Браузер, Firefox или Edge), под своим аккаунтом, а плагин записывает звук с этого Mac.</p>
+        </Notice>
+      ) : null}
+      {tab === "accounts" && hostPlatform !== null && hostPlatform !== "darwin" ? <><ZoomAccountCard nav={nav} /><ProviderAccountCards nav={nav} /></> : null}
       {tab === "integrations" ? <><IntegrationsPanel /><div className="grid gap-3 sm:grid-cols-2">{text("webhookUrl", "Webhook завершения встречи")}{text("webhookSecret", "Секрет подписи", value("webhookSecretConfigured") ? "Секрет уже сохранён" : "Секрет не задан", true)}</div><p className="text-xs text-muted-foreground">Webhook отправляется после завершения расшифровки. Настройки агента и MCP доступны выше.</p></> : null}
     </div>
     {settings && (tab === "recording" || tab === "analysis" || tab === "integrations") ? <div className="mt-4 flex flex-wrap items-center gap-2"><Button size="sm" disabled={save.pending || Object.keys(patch).length === 0} onClick={() => void save.run()}>{save.pending ? <Spinner /> : null}Сохранить настройки</Button>{saved ? <span role="status" className="text-xs text-muted-foreground">Сохранено</span> : null}<ErrorText>{save.error}</ErrorText></div> : null}
