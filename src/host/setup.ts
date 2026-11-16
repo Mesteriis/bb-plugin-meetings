@@ -482,14 +482,24 @@ async function captureStep(paths: HostPaths, options: SetupOptions, context: Ste
   if (!options.force && (await statOrNull(paths.capture)) !== null) return [];
   await context.progress("Компилирую хелпер захвата звука (swiftc)");
   await fs.mkdir(paths.bin, { recursive: true });
+  const moduleCache = path.join(paths.cache, "swift-module-cache");
+  await fs.mkdir(moduleCache, { recursive: true });
+  // The Info.plist gives the bare binary a bundle identity so macOS can attribute
+  // the Microphone and System Audio Recording permissions and show a usage description.
+  const plist = path.join(path.dirname(paths.captureSource), "Info.plist");
   const staging = path.join(paths.bin, ".capture-" + randomBytes(4).toString("hex"));
   await fs.mkdir(staging);
   try {
-    await runChecked("swiftc", [paths.captureSource, "-o", path.join(staging, "capture")], {
-      timeoutMs: 120_000,
-      signal: context.signal,
-      log: context.log,
-    });
+    await runChecked(
+      "swiftc",
+      [
+        "-module-cache-path", moduleCache,
+        paths.captureSource,
+        "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", plist,
+        "-o", path.join(staging, "capture"),
+      ],
+      { timeoutMs: 120_000, signal: context.signal, log: context.log },
+    );
     await fs.rename(path.join(staging, "capture"), paths.capture);
   } finally {
     await removeTree(staging);

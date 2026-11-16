@@ -19,7 +19,7 @@ function shipped(relPath) {
     return false;
   }
   if (/^test_.*\.py$/.test(name) || /\.test\.m?js$/.test(name)) return false;
-  return /\.(mjs|js|py|html|css|json|txt|swift)$/.test(name);
+  return /\.(mjs|js|py|html|css|json|txt|swift|plist)$/.test(name);
 }
 
 export function collectRuntimeFiles(dir = runtimeDir) {

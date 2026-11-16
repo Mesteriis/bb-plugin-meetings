@@ -85,6 +85,13 @@ export function localSourceLabel(appKey: string): string {
   return LOCAL_SOURCE_RULES.find((rule) => rule.appKey === appKey)?.label ?? appKey;
 }
 
+/** Bundle-id matchers (exact ids + helper prefixes) for the capture helper's process tap. */
+export function localSourceBundles(appKey: string): string[] {
+  const rule = LOCAL_SOURCE_RULES.find((candidate) => candidate.appKey === appKey);
+  if (rule === undefined) return [];
+  return [...rule.bundleIds, ...rule.helperPrefixes];
+}
+
 /** The meeting source for a bundle id, or null when it is not a listed app. */
 export function classifyBundleId(bundleId: string): LocalSource | null {
   const id = bundleId.trim();
