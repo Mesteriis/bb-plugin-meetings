@@ -926,7 +926,7 @@ events in the window, deduped by `uid + occurrence start`. Cancelled
 | diarization | select | `ui+acoustic` | `ui+acoustic`, `ui`, `acoustic` |
 | speakerLagMs | number 0–5000 | 700 | lag for SpeakerEvents without `lagMs`; shifts the bot's per-signal lags by `speakerLagMs - 700` (per-signal: `speakerSelectors.lagMs`) (§4.3) |
 | gigaamUrl | string | `` | empty = auto-discover the gigaam plugin's server |
-| keepRawAudio | boolean | false | keep audio.pcm |
+| keepRawAudio | boolean | false | keep audio.pcm (and, for a local recording, mic.pcm and system.pcm) |
 | screenshotIntervalSec | number 0–300 | 10 | 0 = only on events |
 | silenceTimeoutMinutes | number 0–240 | 30 | leave after this long with no audio at all; 0 = never |
 | useZoomAccount | boolean | false | join with the signed-in Zoom profile (`bb meetings zoom-login`) |
@@ -1092,12 +1092,15 @@ the system audio) locally, then transcribes with the same pipeline.
   missing) with runtime/capture/Info.plist embedded (NSMicrophoneUsageDescription,
   NSAudioCaptureUsageDescription). `record --meeting-dir <dir> --bundle-ids …`
   records two streams and writes state.json/events.jsonl in the bot's shapes:
-  * **Microphone.** The input device the meeting app's audio processes use
-    (kAudioProcessPropertyDevices, input scope), because the system default
-    input can be a dead device (a MacBook's own microphone with the lid
-    closed delivers exact zeros). The system default only when the app's
-    device cannot be read. The chosen device is logged in events.jsonl; a
-    device change during the meeting is not followed.
+  * **Microphone.** A Core Audio IO proc on the input device the meeting
+    app's audio processes use (kAudioProcessPropertyDevices, input scope),
+    because the system default input can be a dead device (a MacBook's own
+    microphone with the lid closed delivers exact zeros). The system default
+    only when the app's device cannot be read; `--input-device <name>` forces
+    one for diagnostics. Once a second the helper checks whether the app
+    moved to another device, the device changed its format, or buffers
+    stopped for 3 s, and then starts the path again (at most every 5 s). The
+    chosen device and every restart are in events.jsonl.
   * **System audio.** A private Core Audio process tap on the app's playing
     processes inside a private aggregate device (macOS 14.2+ API). When the
     app is not playing yet at start, the tap covers all system audio except
@@ -1107,30 +1110,41 @@ the system audio) locally, then transcribes with the same pipeline.
     signal, stop.request, heartbeat) must keep running. A start that has not
     returned in 10 s is reported as an issue.
   * **One clock.** Each callback's host timestamp places its samples on the
-    recording's 16 kHz sample clock (StreamClock; 100 ms jitter tolerance).
+    recording's 16 kHz sample clock (StreamClock). A stream more than 100 ms
+    behind its timestamps gets a gap of zeros; a stream more than 100 ms
+    ahead (a device clock that runs fast) has the excess samples dropped, so
+    neither error grows beyond the tolerance however long the meeting is.
     Gaps are zeros in the stream's own file, so a position in mic.pcm,
     system.pcm and audio.pcm is the same moment. audio.pcm is the clamped
     per-sample sum (TimelineMixer); output never waits more than 1 s for the
     slower stream, so a late, silent or absent stream contributes zeros and
-    live transcription keeps going.
-  * **Issues.** A usable recording is never discarded. A failed Core Audio
-    step, a start timeout, a system stream that delivered nothing, or zeros
-    while a tapped process was playing become `audioIssue` (reason
-    `capture`) as soon as they are known, naming the operation and its
-    OSStatus. A microphone that delivers exact zeros is reported the same
-    way with the device name. The meeting ends `failed`
+    live transcription keeps going. Samples that arrive more than 1 s late
+    are in the stream's own file but not in the mix. Statistics count only
+    samples accepted before the files were closed.
+  * **Issues.** The two paths start independently and a usable recording is
+    never discarded. A failed Core Audio step, a start that has not returned
+    in 10 s, a stream that delivered nothing, zeros from the system stream
+    while a tapped process was playing, a microphone whose last 10 s are
+    exact zeros or that stopped delivering for 10 s: each becomes
+    `audioIssue` (reason `capture`) as soon as it is known, naming the
+    device or the operation and its OSStatus. The meeting ends `failed`
     (`recording_failed`) only when neither stream has sound.
   * **Stop.** SIGTERM/SIGINT or stop.request: stop IO, destroy the IO proc,
     aggregate and tap, close the files, compress audio.ogg (ffmpeg, Opus),
-    write the final state. `capture selftest` checks the mixer, the clock,
-    the issue rules and the microphone choice (test/capture-selftest.test.ts).
+    write the final state. A start still blocked inside Core Audio is
+    cancelled and undoes itself if it returns. `capture selftest` checks the
+    mixer, the clock, the issue rules, the microphone choice and its restart
+    rules (test/capture-selftest.test.ts).
 * **File contract.** Local recordings reuse the meeting directory: config.json
   carries platform "local", sourceApp, sourceLabel, ownerName and the
   transcriber block (including engine, language, glossary, whisperModel).
   The transcriber cuts a VAD segment where the louder side changes between
   mic.pcm and system.pcm (source_split_offsets; a side must hold 1.2 s),
   attributes microphone-dominant pieces to ownerName (default «Я») and
-  resolves the rest by acoustic clustering. With keepRawAudio off, mic.pcm
+  resolves the rest by acoustic clustering. This is an energy heuristic:
+  overlapping speech goes to the louder side, turns shorter than 1.2 s are
+  absorbed by their neighbour, and with no system stream every piece is the
+  owner's. With keepRawAudio off, mic.pcm
   and system.pcm are removed after the final transcript, so a later
   retranscribe has no owner attribution.
 * **Speech engine.** engine "whisper" (default on macOS) runs mlx-whisper with
