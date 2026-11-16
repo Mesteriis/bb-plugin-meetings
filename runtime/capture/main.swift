@@ -361,15 +361,23 @@ final class SystemTapConverter {
     let frameLength = Int(first.mDataByteSize) / bytesPerFrame
     guard frameLength > 0, let input = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(frameLength)) else { return [] }
     input.frameLength = AVAudioFrameCount(frameLength)
+    let sampleBytes = Int(inputFormat.streamDescription.pointee.mBitsPerChannel) / 8
     for i in 0 ..< buffers.count {
       let src = buffers[i]
       guard let mData = src.mData else { continue }
-      let count = Int(src.mDataByteSize) / MemoryLayout<Float32>.size
-      let source = UnsafeBufferPointer(start: mData.assumingMemoryBound(to: Float32.self), count: count)
-      if let dest = input.floatChannelData?[i] {
-        for j in 0 ..< count { dest[j] = source[j] }
-      } else if let dest = input.int16ChannelData?[i] {
-        for j in 0 ..< count { dest[j] = Int16(source[j] * 32767.0) }
+      let count = Int(src.mDataByteSize) / sampleBytes
+      switch inputFormat.commonFormat {
+      case .pcmFormatFloat32:
+        let source = UnsafeBufferPointer(start: mData.assumingMemoryBound(to: Float32.self), count: count)
+        if let dest = input.floatChannelData?[i] { for j in 0 ..< count { dest[j] = source[j] } }
+      case .pcmFormatInt16:
+        let source = UnsafeBufferPointer(start: mData.assumingMemoryBound(to: Int16.self), count: count)
+        if let dest = input.int16ChannelData?[i] { for j in 0 ..< count { dest[j] = source[j] } }
+      case .pcmFormatInt32:
+        let source = UnsafeBufferPointer(start: mData.assumingMemoryBound(to: Int32.self), count: count)
+        if let dest = input.int32ChannelData?[i] { for j in 0 ..< count { dest[j] = source[j] } }
+      default:
+        break
       }
     }
     let ratio = outputFormat.sampleRate / inputFormat.sampleRate
@@ -385,49 +393,6 @@ final class SystemTapConverter {
     guard output.frameLength > 0, let channel = output.floatChannelData?[0] else { return [] }
     return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength))).map { Int16(max(-1.0, min(1.0, Double($0))) * 32767.0) }
   }
-}
-
-/// Resample Float32 mono at srcRate to Int16 mono 16 kHz (nearest sample).
-func resampleMono(_ src: [Float], srcRate: Double) -> [Int16] {
-  guard !src.isEmpty else { return [] }
-  let ratio = srcRate / Double(SAMPLE_RATE)
-  var out: [Int16] = []
-  out.reserveCapacity(Int(Double(src.count) / ratio) + 1)
-  var position = 0.0
-  while Int(position) < src.count {
-    let v = src[Int(position)]
-    let clamped = max(-1.0, min(1.0, Double(v)))
-    out.append(Int16(clamped * 32767.0))
-    position += ratio
-  }
-  return out
-}
-
-/// Extract downmixed mono Float32 from an AudioBufferList.
-func monoFloat(_ data: UnsafePointer<AudioBufferList>) -> [Float] {
-  let list = data.pointee
-  guard list.mNumberBuffers > 0 else { return [] }
-  let bufferCount = Int(list.mNumberBuffers)
-  let buffersPtr = withUnsafePointer(to: list.mBuffers) { UnsafeRawPointer($0).assumingMemoryBound(to: AudioBuffer.self) }
-  var channelsData: [[Float]] = []
-  for i in 0 ..< bufferCount {
-    let ab = buffersPtr[i]
-    guard let mData = ab.mData else { continue }
-    let count = Int(ab.mDataByteSize) / MemoryLayout<Float>.size
-    let samples = UnsafeBufferPointer(start: mData.assumingMemoryBound(to: Float.self), count: count)
-    channelsData.append(Array(samples))
-  }
-  guard let first = channelsData.first else { return [] }
-  let count = first.count
-  var result: [Float] = []
-  result.reserveCapacity(count)
-  for j in 0 ..< count {
-    var sum: Float = 0
-    var n = 0
-    for c in channelsData where j < c.count { sum += c[j]; n += 1 }
-    result.append(n > 0 ? sum / Float(n) : 0)
-  }
-  return result
 }
 
 /// Compress audio.pcm (s16le 16 kHz mono) to audio.ogg (Opus 48 kHz mono), like bot mode.

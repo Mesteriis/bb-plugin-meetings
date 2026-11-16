@@ -1826,6 +1826,10 @@ class Transcriber:
         remove_quietly(self.paths["decoded"])
         if not self.keep_raw:
             remove_quietly(self.paths["pcm"])
+            # Local recordings: the per-stream PCM is the owner-attribution source;
+            # without it a retranscription loses owner attribution (DESIGN §15).
+            remove_quietly(os.path.join(self.dir, "mic.pcm"))
+            remove_quietly(os.path.join(self.dir, "system.pcm"))
         speakers = ", ".join(f"{sp['label']} {sp['talkSec']:.0f}s" for sp in transcript["speakers"])
         log(f"final transcript: {len(final)} segments, speakers: {speakers or 'none'} "
             f"({time.monotonic() - started:.2f}s)")

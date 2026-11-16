@@ -1241,6 +1241,23 @@ class LocalRecordingTests(unittest.TestCase):
         second.pop("createdAt", None)
         self.assertEqual(first, second)
 
+
+    def test_keep_raw_audio_off_removes_streams(self):
+        d = self._synthetic_local_meeting()
+        cfg = read_json(os.path.join(d, "config.json"))
+        cfg["transcriber"]["keepRawAudio"] = False
+        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        self.assertEqual(tr.Transcriber(self._local_args(d, "offline"), whisper_impl=impl).run(), 0)
+        self.assertIsNotNone(read_json(os.path.join(d, "transcript.json")))
+        self.assertFalse(os.path.exists(os.path.join(d, "mic.pcm")))
+        self.assertFalse(os.path.exists(os.path.join(d, "system.pcm")))
+        self.assertFalse(os.path.exists(os.path.join(d, "audio.pcm")))
+
     def test_live_local_runner_finishes(self):
         d = self._synthetic_local_meeting()
         with open(os.path.join(d, "state.json"), "w", encoding="utf-8") as f:
