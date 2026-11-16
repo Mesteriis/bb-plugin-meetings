@@ -41,6 +41,24 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
   const boolean = (key: string, label: string) => <Toggle key={key} label={label} checked={value(key) === true} onChange={checked => update(key, checked)} />;
   const number = (key: string, label: string, min: number, max: number, step = 1) => <Field key={key} label={label}><input className={fieldClass} type="number" min={min} max={max} step={step} value={Number(value(key) ?? min)} onChange={event => update(key, event.target.valueAsNumber)} /></Field>;
   const text = (key: string, label: string, hint?: string, secret = false) => <Field key={key} label={label} hint={hint}><input className={fieldClass} type={secret ? "password" : "text"} autoComplete={secret ? "new-password" : "off"} value={String(secret ? patch[key] ?? "" : value(key) ?? "")} onChange={event => update(key, event.target.value)} placeholder={secret ? "Оставьте пустым, чтобы сохранить ключ" : undefined} /></Field>;
+  const localAppOptions = [["zoom", "Zoom"], ["teams", "Microsoft Teams"], ["telegram", "Telegram"], ["facetime", "FaceTime"], ["browser", "Браузер"]] as const;
+  const enabledLocalApps = (() => {
+    try {
+      const parsed: unknown = JSON.parse(String(value("localApps") ?? ""));
+      return Array.isArray(parsed) ? new Set(parsed.filter((x): x is string => typeof x === "string")) : null;
+    } catch {
+      return null;
+    }
+  })();
+  const isLocalAppEnabled = (appKey: string) => enabledLocalApps === null || enabledLocalApps.has(appKey);
+  const toggleLocalApp = (appKey: string) => {
+    const all = localAppOptions.map(([key]) => key);
+    const current = enabledLocalApps === null ? new Set(all) : new Set(enabledLocalApps);
+    if (current.has(appKey)) current.delete(appKey);
+    else current.add(appKey);
+    const enabled = all.filter((key) => current.has(key));
+    update("localApps", enabled.length === all.length ? "" : JSON.stringify(enabled));
+  };
   return <div className="min-w-0 border-t border-border p-3">
     <div role="tablist" aria-label="Настройки встреч" className="mb-4 flex flex-wrap gap-1">{TABS.map(([id, label]) => <button type="button" role="tab" aria-selected={tab === id} key={id} className={`rounded-md px-2.5 py-1.5 text-xs font-medium ${tab === id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50"}`} onClick={() => setTab(id)}>{label}</button>)}</div>
     <ErrorText>{load.error}</ErrorText>
@@ -52,7 +70,39 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
         {text("chatAnnouncement", "Сообщение в чат после подключения", "Пусто — не отправлять сообщение")}
         <div className="grid gap-3 sm:grid-cols-2"><Field label="Разделение по спикерам"><select className={fieldClass} value={String(value("diarization") ?? "ui+acoustic")} onChange={event => update("diarization", event.target.value)}><option value="ui+acoustic">Интерфейс и голоса</option><option value="ui">Интерфейс встречи</option><option value="acoustic">По голосам</option></select></Field>{number("speakerLagMs", "Задержка индикатора спикера, мс", 0, 5000)}{text("gigaamUrl", "Сервер распознавания", "Пусто — GigaAM этого BB")}{text("chromePath", "Путь к Chrome", "Пусто — определить автоматически")}</div>
         <details><summary className="cursor-pointer text-xs text-muted-foreground">Календарь и расширенные настройки</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{boolean("calendarAutoJoin", "Автоматически входить по календарю")}{number("calendarLeadMinutes", "Входить заранее, мин", 0, 30)}{number("calendarOvertimeMinutes", "Задержаться после события, мин", 0, 600)}{number("calendarSyncMinutes", "Синхронизация календаря, мин", 1, 120)}{text("calendarFilter", "Фильтр событий")}{text("calendarIcsUrls", "Ссылки ICS", "Новые секретные ссылки через пробел; пусто сохраняет текущие", true)}{text("speakerSelectors", "Селекторы спикеров (JSON)")}</div></details>
-        <details open={value("localRecordingEnabled") === true}><summary className="cursor-pointer text-xs text-muted-foreground">Локальная запись (macOS, без бота)</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{boolean("localRecordingEnabled", "Включить локальную запись")}{boolean("localAutoRecord", "Начинать запись автоматически")}{number("localStartThresholdSec", "Порог начала, с", 1, 300)}{number("localGraceSec", "Остановить после тишины, с", 5, 3600)}{text("localOwnerName", "Имя владельца в записи")}{text("localLanguage", "Язык распознавания")}{text("localGlossary", "Глоссарий терминов", "Одно на строку")}{text("localApps", "Приложения (JSON)", "Например [\"zoom\",\"browser\"]; пусто — все")}</div><div className="mt-3"><Field label="Распознавание локальной записи"><select className={fieldClass} value={String(value("localEngine") ?? "whisper")} onChange={event => update("localEngine", event.target.value)}><option value="whisper">Whisper (локально)</option><option value="gigaam">GigaAM (сервер)</option></select></Field><p className="text-xs text-muted-foreground">Без бота: плагин замечает, что приложение на этом Mac (Zoom, Teams, Telegram, FaceTime или браузер) использует микрофон, и записывает звук локально. Требует macOS 14.4+ на Apple silicon.</p></div></details>
+        <details open={value("localRecordingEnabled") === true}>
+          <summary className="cursor-pointer text-xs text-muted-foreground">Локальная запись (macOS, без бота)</summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {boolean("localRecordingEnabled", "Включить локальную запись")}
+            {boolean("localAutoRecord", "Начинать запись автоматически")}
+            {number("localStartThresholdSec", "Порог начала, с", 1, 300)}
+            {number("localGraceSec", "Остановить после тишины, с", 5, 3600)}
+            {text("localOwnerName", "Имя владельца в записи")}
+            {text("localLanguage", "Язык распознавания")}
+            {text("localGlossary", "Глоссарий терминов", "Одно на строку")}
+          </div>
+          <div className="mt-3">
+            <Field label="Распознавание локальной записи">
+              <select className={fieldClass} value={String(value("localEngine") ?? "whisper")} onChange={event => update("localEngine", event.target.value)}>
+                <option value="whisper">Whisper (локально)</option>
+                <option value="gigaam">GigaAM (сервер)</option>
+              </select>
+            </Field>
+          </div>
+          <div className="mt-3">
+            <Field label="Приложения для записи" hint="Пусто — все поддерживаемые">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {localAppOptions.map(([appKey, appLabel]) => (
+                  <label key={appKey} className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input type="checkbox" className="accent-foreground" checked={isLocalAppEnabled(appKey)} onChange={() => toggleLocalApp(appKey)} />
+                    {appLabel}
+                  </label>
+                ))}
+              </div>
+            </Field>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">Без бота: плагин замечает, что приложение на этом Mac (Zoom, Teams, Telegram, FaceTime или браузер) использует микрофон, и записывает звук локально. Требует macOS 14.4+ на Apple silicon.</p>
+        </details>
       </> : null}
       {tab === "bot" ? <BotCard /> : null}
       {tab === "analysis" && settings ? <>
