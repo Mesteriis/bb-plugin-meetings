@@ -138,8 +138,8 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
     meetingIds: await listMeetingIds(pathsFor(context.experimental_paths.dataDir)),
   }),
 
-  "local.poll": async ({ startThresholdMs, graceMs, apps }, context) =>
-    localPoll(pathsFor(context.experimental_paths.dataDir), { startThresholdMs, graceMs, apps }),
+  "local.poll": async ({ startThresholdMs, graceMs, apps, recording }, context) =>
+    localPoll(pathsFor(context.experimental_paths.dataDir), { startThresholdMs, graceMs, apps, recording }),
 
   "local.start": async (input, context) => startLocalMeeting(pathsFor(context.experimental_paths.dataDir), input),
 };

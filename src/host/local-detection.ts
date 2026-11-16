@@ -38,6 +38,18 @@ export function createDetectionState(): DetectionState {
   return { byApp: new Map() };
 }
 
+/** Mark appKeys as already recording (server restart seed). A recording app that is
+ * absent starts its grace clock on the next sample; one that is held stays recording. */
+export function seedRecording(state: DetectionState, appKeys: readonly string[]): DetectionState {
+  const out: DetectionState = { byApp: new Map(state.byApp) };
+  for (const appKey of appKeys) {
+    const existing = out.byApp.get(appKey);
+    if (existing !== undefined && existing.recording) continue;
+    out.byApp.set(appKey, { recording: true, holding: false, holdSinceMs: null, releasedSinceMs: null });
+  }
+  return out;
+}
+
 function appState(state: DetectionState, appKey: string): AppState {
   let entry = state.byApp.get(appKey);
   if (entry === undefined) {

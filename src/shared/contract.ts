@@ -303,6 +303,8 @@ export const hostContract = defineRpcContract({
         graceMs: z.number().int().min(1000).max(3_600_000),
         /** Enabled appKeys; null = all supported, [] = none. */
         apps: z.array(z.string()).max(64).nullable(),
+        /** appKeys the server already has a live local recording for (restart seed). */
+        recording: z.array(z.string()).max(64),
       })
       .strict(),
     output: z
