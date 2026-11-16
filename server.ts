@@ -59,6 +59,7 @@ export function createMeetingsPlugin(options: PluginOptions = {}) {
     // Starts due meetings, follows running ones (2 s while active, 15 s idle),
     // reconciles everything once on load and syncs calendars.
     bb.background.service("scheduler", { start: (signal) => service.runScheduler(signal) });
+    bb.background.service("local-detection", { start: (signal) => service.runLocalDetection(signal) });
     bb.background.service("completion-recovery", {
       start: async (signal) => {
         while (!signal.aborted) {

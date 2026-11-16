@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RUNTIME_FILES, RUNTIME_HASH } from "../src/generated/runtime-files.js";
+// @ts-expect-error plain .mjs script without types; vitest transpiles it directly
 import { collectRuntimeFiles, renderRuntimeFiles, runtimeDir } from "../scripts/embed-runtime.mjs";
 
 describe("embedded runtime", () => {

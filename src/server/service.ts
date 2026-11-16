@@ -124,7 +124,6 @@ export class MeetingsService {
   readonly now: () => number;
   private readonly joinPollMs: number;
   private readonly localPollMs: number;
-  private nextDetectionAt = 0;
   private lastLocalPollError: string | null = null;
   private lastLocalPollErrorAt = 0;
   readonly zoom: ZoomAccount;
@@ -1085,12 +1084,18 @@ export class MeetingsService {
     }
   }
 
+  /** Whether local-recording detection should run: enabled and the primary host is macOS Apple silicon. */
+  async localDetectionEnabled(): Promise<boolean> {
+    const settings = await this.settings.get();
+    if (!settings.localRecordingEnabled || !settings.localAutoRecord) return false;
+    const env = await this.envReport(false).catch(() => null);
+    return env !== null && env.platform === "darwin" && env.arch === "arm64";
+  }
+
   /** Poll local-recording detection on a macOS Apple-silicon primary host (DESIGN §15). */
   async pollLocalDetection(signal?: AbortSignal): Promise<void> {
+    if (!(await this.localDetectionEnabled())) return;
     const settings = await this.settings.get();
-    if (!settings.localRecordingEnabled || !settings.localAutoRecord) return;
-    const env = await this.envReport(false).catch(() => null);
-    if (env === null || env.platform !== "darwin" || env.arch !== "arm64") return;
     let poll: HostOutput<"local.poll">;
     try {
       poll = await this.call(
@@ -1232,16 +1237,6 @@ export class MeetingsService {
       try {
         delay = await this.tick(signal);
         this.lastTickProblem = null;
-        // Detection runs on its own ~1 s cadence, not the 15 s idle tick, so a 5 s
-        // hold is acted on within about a second (DESIGN §15, C1).
-        const now = this.now();
-        if (now >= this.nextDetectionAt) {
-          this.nextDetectionAt = now + this.localPollMs;
-          await this.pollLocalDetection(signal);
-          delay = Math.min(delay, this.localPollMs);
-        } else {
-          delay = Math.min(delay, Math.max(0, this.nextDetectionAt - now));
-        }
       } catch (error) {
         if (signal.aborted) break;
         const problem = errorMessage(error);
@@ -1252,6 +1247,21 @@ export class MeetingsService {
         this.wakeScheduler = wake;
       });
       this.wakeScheduler = null;
+    }
+  }
+
+  /** The local-detection background service: polls every ~1 s, only when enabled. */
+  async runLocalDetection(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      try {
+        if (await this.localDetectionEnabled()) {
+          await this.pollLocalDetection(signal);
+        }
+      } catch (error) {
+        if (signal.aborted) break;
+        this.bb.log.warn(`Local detection failed: ${errorMessage(error)}`);
+      }
+      await sleep(this.localPollMs, signal);
     }
   }
 
