@@ -20,7 +20,10 @@ import {
   PLAYWRIGHT_CORE,
   PYTHON_VERSION,
   UV_VERSION,
+  WHISPER_MODEL,
+  isMacArm64,
   platformProblem,
+  transcriberMacosRequirements,
   transcriberRequirements,
   uvDownload,
   venvSpec,
@@ -63,7 +66,7 @@ export async function startSetup(
   paths: HostPaths,
   options: SetupOptions,
   retain: (() => WorkerLease) | null,
-  steps: readonly SetupStep[] = DEFAULT_STEPS,
+  steps: readonly SetupStep[] = isMacArm64() ? MACOS_STEPS : DEFAULT_STEPS,
 ): Promise<{ started: boolean }> {
   if (active.has(paths.root)) return { started: false };
   const controller = new AbortController();
@@ -437,6 +440,18 @@ export async function ensureVenv(paths: HostPaths, uv: string, force: boolean, c
     signal: context.signal,
     log: context.log,
   });
+  // Whisper (MLX, Apple silicon) is macOS-only: never installed on Linux.
+  if (isMacArm64()) {
+    await context.progress("Устанавливаю mlx-whisper (распознавание Apple silicon)");
+    const macRequirements = path.join(paths.cache, "requirements-macos.txt");
+    await fs.writeFile(macRequirements, transcriberMacosRequirements());
+    await runChecked(uv, ["pip", "install", "--python", paths.venvPython, "-r", macRequirements], {
+      timeoutMs: UV_TIMEOUT_MS,
+      env,
+      signal: context.signal,
+      log: context.log,
+    });
+  }
   await writeJsonAtomic(paths.venvMarker, { spec, installedAt: new Date().toISOString() });
   const after = await probeVenv(paths);
   if (after.sherpa === null) throw new Error(`sherpa-onnx не импортируется после установки: ${after.error ?? "неизвестная ошибка"}`);
@@ -459,6 +474,45 @@ async function ensureModel(paths: HostPaths, spec: ModelSpec, force: boolean, co
   });
   const after = await checkModel(paths, spec, { full: true });
   if (!after.ok) throw new Error(after.detail);
+}
+
+/** macOS local recording: write the embedded runtime and compile the Swift capture helper. */
+async function captureStep(paths: HostPaths, options: SetupOptions, context: StepContext): Promise<string[]> {
+  await ensureRuntimeDir(paths, { force: options.force });
+  if (!options.force && (await statOrNull(paths.capture)) !== null) return [];
+  await context.progress("Компилирую хелпер захвата звука (swiftc)");
+  await fs.mkdir(paths.bin, { recursive: true });
+  const staging = path.join(paths.bin, ".capture-" + randomBytes(4).toString("hex"));
+  await fs.mkdir(staging);
+  try {
+    await runChecked("swiftc", [paths.captureSource, "-o", path.join(staging, "capture")], {
+      timeoutMs: 120_000,
+      signal: context.signal,
+      log: context.log,
+    });
+    await fs.rename(path.join(staging, "capture"), paths.capture);
+  } finally {
+    await removeTree(staging);
+  }
+  return [];
+}
+
+/** macOS local recording: download the local Whisper model into <hostData>/models. */
+async function whisperStep(paths: HostPaths, options: SetupOptions, context: StepContext): Promise<string[]> {
+  if (!options.force && (await statOrNull(paths.whisperModel)) !== null) return [];
+  if ((await statOrNull(paths.venvPython)) === null) return ["Whisper-модель не загружена: сначала создайте Python-окружение"];
+  await context.progress("Скачиваю модель Whisper large-v3-turbo (~" + (WHISPER_MODEL.diskBytes / 1e9).toFixed(1) + " ГБ)");
+  const script = [
+    "from huggingface_hub import snapshot_download",
+    "snapshot_download(repo_id=" + JSON.stringify(WHISPER_MODEL.repo) + ", local_dir=" + JSON.stringify(paths.whisperModel) + ")",
+  ].join("; ");
+  await runChecked(paths.venvPython, ["-I", "-c", script], {
+    timeoutMs: 30 * 60_000,
+    env: uvEnv(paths),
+    signal: context.signal,
+    log: context.log,
+  });
+  return [];
 }
 
 /** Remove runtime/<hash> dirs of older plugin versions that no live process uses, and stale staging dirs. */
@@ -494,4 +548,8 @@ async function rotate(file: string): Promise<void> {
   if (stat !== null && stat.size > LOG_ROTATE_BYTES) await fs.rename(file, `${file}.1`).catch(() => undefined);
 }
 
+/** Linux bot steps. */
 export const DEFAULT_STEPS: readonly SetupStep[] = [systemStep, playwrightStep, uvStep, modelsStep, gcStep];
+
+/** macOS local-recording steps (no Chrome/Xvfb/PulseAudio/apt). */
+export const MACOS_STEPS: readonly SetupStep[] = [captureStep, uvStep, whisperStep, modelsStep, gcStep];

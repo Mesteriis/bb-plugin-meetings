@@ -51,7 +51,7 @@ import type { FormatMeeting } from "./format.js";
 import type { GoogleEndpoints } from "./google-auth.js";
 import { GoogleService } from "./google-service.js";
 import { notificationText, warningNotificationText } from "./notify.js";
-import { parseSpeakerSelectors, type MeetingsSettings, type SettingsHandle } from "./settings.js";
+import { parseLocalApps, parseSpeakerSelectors, type MeetingsSettings, type SettingsHandle } from "./settings.js";
 import { audioIssueEscalated, describeStatus, mapRuntime, type MappedStatus } from "./status.js";
 import { ZoomAccount } from "./zoom-account.js";
 import { NotetakerService } from "./notetaker-service.js";
@@ -1057,10 +1057,104 @@ export class MeetingsService {
     }
   }
 
+  /** Poll local-recording detection on a macOS Apple-silicon primary host (DESIGN §15). */
+  private async pollLocalDetection(signal?: AbortSignal): Promise<void> {
+    const settings = await this.settings.get();
+    if (!settings.localRecordingEnabled || !settings.localAutoRecord) return;
+    const env = await this.envReport(false).catch(() => null);
+    if (env === null || env.platform !== "darwin" || env.arch !== "arm64") return;
+    let poll: HostOutput<"local.poll">;
+    try {
+      poll = await this.call(
+        "local.poll",
+        { startThresholdMs: settings.localStartThresholdSec * 1000, graceMs: settings.localGraceSec * 1000, apps: parseLocalApps(settings.localApps) },
+        { signal },
+      );
+    } catch (error) {
+      this.bb.log.warn(`local.poll failed: ${errorMessage(error)}`);
+      return;
+    }
+    if (!poll.supported || poll.error !== null) return;
+    let gigaamUrl: string | null = null;
+    if (settings.localEngine === "gigaam") {
+      gigaamUrl = await this.discoverGigaam(settings, await this.primaryHostId(), signal);
+    }
+    for (const started of poll.started) await this.startLocalRecording(started.appKey, started.label, settings, gigaamUrl, signal);
+    for (const ended of poll.ended) await this.stopLocalRecording(ended.appKey);
+  }
+
+  private localUrl(appKey: string): string {
+    return "local://" + appKey;
+  }
+
+  private async startLocalRecording(appKey: string, label: string, settings: MeetingsSettings, gigaamUrl: string | null, signal?: AbortSignal): Promise<void> {
+    const live = this.repo.meetingsWithStatus([...LIVE_STATUSES]).find((row) => row.source === "local" && row.url === this.localUrl(appKey));
+    if (live !== undefined) return;
+    const now = this.now();
+    const id = newMeetingId(now);
+    this.repo.insertMeeting({
+      id,
+      title: label + " — локальная запись",
+      url: this.localUrl(appKey),
+      platform: "local",
+      meetingNumber: null,
+      botName: settings.localOwnerName.trim() || "Я",
+      source: "local",
+      status: "recording",
+      statusDetail: describeStatus("recording"),
+      scheduledAt: null,
+      createdAt: now,
+      options: { autoTranscribe: settings.autoTranscribe },
+      requestedByThreadId: null,
+      notify: false,
+      calendarKey: null,
+    });
+    this.publishMeeting(id);
+    this.starting.add(id);
+    try {
+      const hostId = await this.primaryHostId();
+      const snapshot = await this.call(
+        "local.start",
+        {
+          meetingId: id,
+          appKey,
+          label,
+          ownerName: settings.localOwnerName.trim() || "Я",
+          engine: settings.localEngine as "whisper" | "gigaam",
+          language: settings.localLanguage.trim() || "ru",
+          glossary: settings.localGlossary,
+          transcriber: {
+            gigaamUrl,
+            diarization: settings.diarization as DiarizationMode,
+            speakerLagMs: clampInt(settings.speakerLagMs, 0, 5000),
+            keepRawAudio: settings.keepRawAudio,
+            threads: 0,
+          },
+        },
+        { hostId, timeoutMs: 30_000 },
+      );
+      this.repo.updateMeeting(id, { hostId, startedAt: now });
+      await this.withLock(id, () => this.applySnapshot(this.requireMeeting(id), snapshot, signal));
+    } catch (error) {
+      this.bb.log.warn(`Could not start local recording for ${appKey}: ${errorMessage(error)}`);
+      this.repo.updateMeeting(id, { status: "failed", statusDetail: "Не удалось начать локальную запись", errorCode: "unknown", errorMessage: errorMessage(error), endedAt: this.now() });
+      this.publishMeeting(id);
+    } finally {
+      this.starting.delete(id);
+    }
+    this.wake();
+  }
+
+  private async stopLocalRecording(appKey: string): Promise<void> {
+    const row = this.repo.meetingsWithStatus([...LIVE_STATUSES]).find((r) => r.source === "local" && r.url === this.localUrl(appKey));
+    if (row !== undefined) await this.stop(row.id);
+  }
+
   /** One scheduler pass. Returns the delay until the next one. */
   async tick(signal?: AbortSignal): Promise<number> {
     await this.startDueMeetings(signal);
     await this.reconcileActive(signal);
+    await this.pollLocalDetection(signal);
     let busy = this.repo.countWithStatus([...ACTIVE_STATUSES]) > 0;
     const signingIn = await Promise.all([this.zoom, this.meet, this.telemost].map((account) => account.active(signal))).then((active) => active.some(Boolean)).catch((error: unknown) => {
       this.bb.log.warn(`Zoom sign-in session check failed: ${errorMessage(error)}`);
