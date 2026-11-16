@@ -154,6 +154,16 @@ describe("local recording auto-record", () => {
     expect(hostCalls(harness, "local.poll")).toHaveLength(0);
   });
 
+  it("records from the microphone chosen in settings, or the meeting app's when none is chosen", async () => {
+    for (const [setting, expected] of [["USB Video Bar", "USB Video Bar"], ["", ""]] as const) {
+      const loaded = await load({ settings: { ...macSettings(), localMicrophone: setting }, now: () => T0 });
+      loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+      loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+      await loaded.service.pollLocalDetection();
+      expect(loaded.fake.localStartCalls[0]).toMatchObject({ inputDevice: expected });
+    }
+  });
+
   it("keeps the local speech settings through start and retranscribe", async () => {
     const loaded = await load({ settings: { ...macSettings(), localGlossary: "термин", localOwnerName: "Я", localLanguage: "ru" }, now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });

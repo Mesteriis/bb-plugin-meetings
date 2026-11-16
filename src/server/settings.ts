@@ -396,6 +396,13 @@ export function defineSettings(bb: BbPluginApi) {
       experimental_schema: z.string().max(64),
       default: "Я",
     },
+    localMicrophone: {
+      type: "string",
+      label: "Микрофон для локальной записи",
+      description: "Название устройства ввода, с которого записывается ваш голос. Пусто — микрофон, который использует приложение встречи. Звук собеседников записывается отдельно, прямо из приложения, и от микрофона и наушников не зависит.",
+      experimental_schema: z.string().max(200),
+      default: "",
+    },
     localEngine: {
       type: "select",
       label: "Распознавание локальной записи",

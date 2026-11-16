@@ -1170,6 +1170,7 @@ export class MeetingsService {
           appKey,
           label,
           ownerName: settings.localOwnerName.trim() || "Я",
+          inputDevice: settings.localMicrophone.trim(),
           engine: settings.localEngine as "whisper" | "gigaam",
           language: settings.localLanguage.trim() || "ru",
           glossary: settings.localGlossary,
