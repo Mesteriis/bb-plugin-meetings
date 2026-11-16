@@ -8,7 +8,7 @@ import type { BotState } from "../shared/runtime-files.js";
 import { run } from "./exec.js";
 import { errorMessage, statOrNull, writeJsonAtomic } from "./fsutil.js";
 import { stepDetection, createDetectionState, type DetectionState } from "./local-detection.js";
-import { activeSources, type AudioClientProcess } from "./local-sources.js";
+import { activeSources, localSourceBundles, type AudioClientProcess } from "./local-sources.js";
 import { childEnv, snapshot } from "./meetings.js";
 import { MEETING_FILES as F, meetingDir, type HostPaths } from "./paths.js";
 import { isMacArm64 } from "./platform.js";
@@ -131,6 +131,7 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
     platform: "local",
     sourceApp: input.appKey,
     sourceLabel: input.label,
+    sourceBundles: localSourceBundles(input.appKey),
     url: "local://" + input.appKey,
     ownerName: input.ownerName,
     createdAt: now,
@@ -147,9 +148,12 @@ export async function startLocalMeeting(paths: HostPaths, input: LocalStartInput
     },
   };
   await writeJsonAtomic(path.join(dir, F.config), config);
+  const bundles = localSourceBundles(input.appKey);
+  const args = ["record", "--meeting-dir", dir];
+  if (bundles.length > 0) args.push("--bundle-ids", bundles.join(","));
   const pid = await spawnDetached({
     command: paths.capture,
-    args: ["record", "--meeting-dir", dir],
+    args,
     cwd: dir,
     logFile: path.join(dir, F.botLog),
     env: childEnv(paths),
