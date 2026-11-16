@@ -862,12 +862,15 @@ class WhisperAsr:
 
     DEFAULT_REPO = "mlx-community/whisper-large-v3-turbo"
 
-    def __init__(self, language, glossary, stop, on_status):
+    def __init__(self, language, glossary, stop, on_status, transcribe_impl=None):
+        """transcribe_impl (test seam): callable (audio, language, initial_prompt) -> dict or str.
+        None = the real mlx_whisper.transcribe. Injected by tests, never by the runner."""
         self.language = language or None
         self.glossary = glossary
         self.stop = stop
         self.on_status = on_status
         self._impl = None
+        self._transcribe_impl = transcribe_impl
         self.model = None
         self.repo = os.environ.get("MEETINGS_WHISPER_MODEL") or self.DEFAULT_REPO
         self._lock = threading.Lock()
@@ -879,20 +882,27 @@ class WhisperAsr:
         self._impl = mlx_whisper
         self.model = self.repo
 
+    def _default_transcribe(self, audio, language, initial_prompt):
+        self._load()
+        # mlx_whisper.transcribe(audio, *, path_or_hf_repo, ..., initial_prompt, **decode_options);
+        # "language" is a decode option, "initial_prompt" is an explicit keyword.
+        return self._impl.transcribe(
+            audio, path_or_hf_repo=self.repo, language=language, initial_prompt=initial_prompt
+        )
+
     def transcribe(self, x):
         """Text for the samples; "" when nothing was recognized. Raises Stopped on shutdown."""
-        self._load()
         if self.stop.is_set():
             raise Stopped()
         audio = np.asarray(x, dtype=np.float32)
         with self._lock:
             self.on_status(None)
-            # mlx_whisper.transcribe(audio, *, path_or_hf_repo, ..., initial_prompt, **decode_options);
-            # "language" is a decode option, "initial_prompt" is an explicit keyword.
-            result = self._impl.transcribe(
-                audio, path_or_hf_repo=self.repo, language=self.language, initial_prompt=self.glossary or None
-            )
-        text = (result.get("text") if isinstance(result, dict) else "") or ""
+            impl = self._transcribe_impl or self._default_transcribe
+            result = impl(audio, self.language, self.glossary or None)
+        if isinstance(result, dict):
+            text = result.get("text") or ""
+        else:
+            text = result or ""
         return " ".join(text.split())
 
 
