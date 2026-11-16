@@ -58,10 +58,10 @@ func propertyBool(_ object: AudioObjectID, _ selector: AudioObjectPropertySelect
 func propertyString(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
   var address = AudioObjectPropertyAddress(
     mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-  var value: CFString?
-  var size = UInt32(MemoryLayout<CFString?>.size)
+  var value: Unmanaged<CFString>?
+  var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
   if AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) != noErr { return nil }
-  return value as String?
+  return value?.takeRetainedValue() as String?
 }
 
 func runDetect() {
@@ -99,10 +99,10 @@ func translatePidToProcessObject(_ pid: pid_t) -> AudioObjectID {
 func tapUID(_ tapID: AudioObjectID) -> String? {
   var address = AudioObjectPropertyAddress(
     mSelector: kAudioTapPropertyUID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-  var value: CFString?
-  var size = UInt32(MemoryLayout<CFString?>.size)
+  var value: Unmanaged<CFString>?
+  var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
   if AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &value) == noErr, let v = value {
-    return v as String
+    return v.takeRetainedValue() as String
   }
   return nil
 }
@@ -142,6 +142,7 @@ func createSystemTap(_ bundleIds: [String]) -> (AudioObjectID, String)? {
     let selfObject = translatePidToProcessObject(getpid())
     description = CATapDescription(__stereoGlobalTapButExcludeProcesses: [NSNumber(value: selfObject)])
   }
+  description.isPrivate = true
   var tapID = AudioObjectID(0)
   let status = AudioHardwareCreateProcessTap(description, &tapID)
   guard status == noErr else {
@@ -156,9 +157,16 @@ func createSystemTap(_ bundleIds: [String]) -> (AudioObjectID, String)? {
 }
 
 func createAggregate(tapUID: String) -> AudioObjectID? {
+  // Apple "Capturing system audio with Core Audio taps": a private aggregate
+  // containing the tap, with tap auto-start and sub-tap drift compensation.
+  // tap auto-start (tapautostart) is deliberately omitted: it would block
+  // AudioDeviceStart until a tapped process plays, and the global fallback taps
+  // everything. The private tap with drift compensation is enough.
   let composition: [String: Any] = [
+    "name": "meetings-capture-aggregate",
+    "uid": UUID().uuidString,
     "private": 1,
-    "taps": [["uid": tapUID]],
+    "taps": [["uid": tapUID, "drift": 1]],
   ]
   var aggID = AudioObjectID(0)
   let status = AudioHardwareCreateAggregateDevice(composition as CFDictionary, &aggID)
@@ -178,6 +186,7 @@ final class PcmWriter {
   private var handle: FileHandle?
   private(set) var bytes: Int = 0
   private(set) var peak: Double = 0
+  private let lock = NSLock()
 
   init(_ path: String) {
     FileManager.default.createFile(atPath: path, contents: nil)
@@ -185,6 +194,7 @@ final class PcmWriter {
   }
 
   func write(_ pcm: [Int16]) {
+    lock.lock(); defer { lock.unlock() }
     guard let handle = handle, !pcm.isEmpty else { return }
     for sample in pcm {
       let magnitude = abs(Double(sample))
@@ -196,12 +206,31 @@ final class PcmWriter {
     bytes += pcm.count * 2
   }
 
-  func close() { handle?.closeFile() }
+  func close() {
+    lock.lock(); defer { lock.unlock() }
+    handle?.closeFile()
+    handle = nil
+  }
 }
 
-/// A lock-protected mix of mic + system, both 16 kHz mono, appended in arrival order.
-final class MixWriter {
+/// The per-sample clamped sum of two 16 kHz mono streams; the shorter is padded with zeros.
+func mix(_ a: [Int16], _ b: [Int16]) -> [Int16] {
+  let n = max(a.count, b.count)
+  var out = [Int16](repeating: 0, count: n)
+  for i in 0 ..< n {
+    let av = i < a.count ? Int(a[i]) : 0
+    let bv = i < b.count ? Int(b[i]) : 0
+    out[i] = Int16(max(-32768, min(32767, av + bv)))
+  }
+  return out
+}
+
+/// Mixes mic + system on one 16 kHz sample clock: the shorter stream is padded with zeros,
+/// so a gap in one stream yields that stream's zeros, never a shorter file.
+final class Mixer {
   private var handle: FileHandle?
+  private var mic: [Int16] = []
+  private var sys: [Int16] = []
   private let lock = NSLock()
 
   init(_ path: String) {
@@ -209,16 +238,36 @@ final class MixWriter {
     handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path))
   }
 
-  func write(_ pcm: [Int16]) {
-    guard let handle = handle, !pcm.isEmpty else { return }
-    lock.lock()
-    defer { lock.unlock() }
-    pcm.withUnsafeBytes { buffer in
-      handle.write(Data(buffer))
-    }
+  func appendMic(_ pcm: [Int16]) {
+    lock.lock(); defer { lock.unlock() }
+    mic += pcm
+    drain()
   }
 
-  func close() { handle?.closeFile() }
+  func appendSys(_ pcm: [Int16]) {
+    lock.lock(); defer { lock.unlock() }
+    sys += pcm
+    drain()
+  }
+
+  private func drain() {
+    let n = min(mic.count, sys.count)
+    guard n > 0, let handle = handle else { return }
+    let mixed = mix(Array(mic[0 ..< n]), Array(sys[0 ..< n]))
+    mixed.withUnsafeBytes { handle.write(Data($0)) }
+    mic.removeFirst(n)
+    sys.removeFirst(n)
+  }
+
+  func finish() {
+    lock.lock(); defer { lock.unlock() }
+    guard let handle = handle else { return }
+    let mixed = mix(mic, sys)
+    mixed.withUnsafeBytes { handle.write(Data($0)) }
+    mic.removeAll()
+    sys.removeAll()
+    handle.closeFile()
+  }
 }
 
 func writeJson(_ path: String, _ object: [String: Any]) {
@@ -248,7 +297,7 @@ func meetingId(_ dir: String) -> String {
   return (dir as NSString).lastPathComponent
 }
 
-func stateJson(_ dir: String, _ phase: String, _ startedAt: Int64, _ errorMessage: String? = nil) {
+func stateJson(_ dir: String, _ phase: String, _ startedAt: Int64, _ errorMessage: String? = nil, audioSeconds: Double = 0, audioBytes: Int = 0, audioIssue: [String: Any]? = nil) {
   var endedAt: Any = NSNull()
   var endReason: Any = NSNull()
   var error: Any = NSNull()
@@ -260,7 +309,7 @@ func stateJson(_ dir: String, _ phase: String, _ startedAt: Int64, _ errorMessag
     endReason = "error"
     error = ["code": "recording_failed", "message": errorMessage ?? "recording failed"]
   }
-  let object: [String: Any] = [
+  var object: [String: Any] = [
     "version": 1,
     "meetingId": meetingId(dir),
     "pid": Int(getpid()),
@@ -274,15 +323,68 @@ func stateJson(_ dir: String, _ phase: String, _ startedAt: Int64, _ errorMessag
     "error": error,
     "participants": ["count": NSNull(), "names": []],
     "activeSpeakers": [],
-    "audio": ["seconds": 0, "bytes": 0],
+    "audio": ["seconds": audioSeconds, "bytes": audioBytes],
     "updatedAt": nowMs(),
   ]
+  if let issue = audioIssue { object["audioIssue"] = issue }
   writeJson(dir + "/state.json", object)
 }
 
 func writeFailedState(_ dir: String, _ startedAt: Int64, _ message: String) {
   stateJson(dir, "failed", startedAt, message)
   appendEvent(dir + "/events.jsonl", ["t": nowMs(), "level": "error", "msg": message])
+}
+
+/// Converts the tap's native stream to 16 kHz mono Int16, honouring the
+/// AudioStreamBasicDescription (channel layout, interleaving) and resampling with
+/// AVAudioConverter instead of nearest-sample decimation.
+final class SystemTapConverter {
+  private let converter: AVAudioConverter
+  private let inputFormat: AVAudioFormat
+  private let outputFormat: AVAudioFormat
+
+  init?(asbd: AudioStreamBasicDescription) {
+    var s = asbd
+    guard let inFmt = AVAudioFormat(streamDescription: &s) else { return nil }
+    guard let outFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(SAMPLE_RATE), channels: 1, interleaved: false) else { return nil }
+    guard let conv = AVAudioConverter(from: inFmt, to: outFmt) else { return nil }
+    inputFormat = inFmt
+    outputFormat = outFmt
+    converter = conv
+  }
+
+  func toInt16(_ data: UnsafePointer<AudioBufferList>) -> [Int16] {
+    let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: data))
+    guard let first = buffers.first else { return [] }
+    let bytesPerFrame = Int(inputFormat.streamDescription.pointee.mBytesPerFrame)
+    guard bytesPerFrame > 0 else { return [] }
+    let frameLength = Int(first.mDataByteSize) / bytesPerFrame
+    guard frameLength > 0, let input = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(frameLength)) else { return [] }
+    input.frameLength = AVAudioFrameCount(frameLength)
+    for i in 0 ..< buffers.count {
+      let src = buffers[i]
+      guard let mData = src.mData else { continue }
+      let count = Int(src.mDataByteSize) / MemoryLayout<Float32>.size
+      let source = UnsafeBufferPointer(start: mData.assumingMemoryBound(to: Float32.self), count: count)
+      if let dest = input.floatChannelData?[i] {
+        for j in 0 ..< count { dest[j] = source[j] }
+      } else if let dest = input.int16ChannelData?[i] {
+        for j in 0 ..< count { dest[j] = Int16(source[j] * 32767.0) }
+      }
+    }
+    let ratio = outputFormat.sampleRate / inputFormat.sampleRate
+    let outCapacity = AVAudioFrameCount(Double(input.frameLength) * ratio)
+    guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outCapacity) else { return [] }
+    var fed = false
+    var error: NSError?
+    converter.convert(to: output, error: &error) { _, outStatus in
+      outStatus.pointee = fed ? .noDataNow : .haveData
+      fed = true
+      return input
+    }
+    guard output.frameLength > 0, let channel = output.floatChannelData?[0] else { return [] }
+    return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength))).map { Int16(max(-1.0, min(1.0, Double($0))) * 32767.0) }
+  }
 }
 
 /// Resample Float32 mono at srcRate to Int16 mono 16 kHz (nearest sample).
@@ -355,18 +457,58 @@ func systemStreamIsSilent(peak: Double, bytes: Int, started: Bool) -> Bool {
   return started && bytes > 0 && peak <= 0
 }
 
-/// Self-test for the zero-detection logic: an all-zero synthetic buffer must trigger.
+/// The system-audio issue for a finished recording, or nil (DESIGN §15, decision B5).
+/// - not started, or started but no bytes: a capture issue (operation failed).
+/// - started with only zeros: a permission hint only when a tapped process really played;
+///   otherwise it is genuine silence and there is no issue.
+func systemCaptureIssue(bytes: Int, peak: Double, started: Bool, hadTappedOutput: Bool) -> String? {
+  if !started {
+    return "системный звук не записан: не удалось запустить захват"
+  }
+  if bytes == 0 {
+    return "системный звук не записан: захват не выдал данных"
+  }
+  if peak <= 0 {
+    return hadTappedOutput ? "системный звук пуст, хотя приложение воспроизводило звук (проверьте разрешение «Запись системного звука»)" : nil
+  }
+  return nil
+}
+
+/// Self-test: the mix on one sample clock and the zero-detection predicates.
 func runSelfTest() -> Int32 {
-  let writer = PcmWriter("/tmp/meetings-capture-selftest.pcm")
-  let silent = [Int16](repeating: 0, count: 16_000)
-  writer.write(silent)
-  writer.close()
-  let triggers = systemStreamIsSilent(peak: writer.peak, bytes: writer.bytes, started: true)
-  let noTrigger = systemStreamIsSilent(peak: 100, bytes: writer.bytes, started: true)
-  let notStarted = systemStreamIsSilent(peak: 0, bytes: writer.bytes, started: false)
-  print("selftest zero-detection: all-zero triggers=\(triggers) non-zero triggers=\(noTrigger) not-started triggers=\(notStarted)")
-  try? FileManager.default.removeItem(atPath: "/tmp/meetings-capture-selftest.pcm")
-  return (triggers && !noTrigger && !notStarted) ? 0 : 1
+  var ok = true
+  func check(_ name: String, _ cond: Bool) {
+    if !cond { ok = false }
+    print("selftest \(name): \(cond ? "ok" : "FAIL")" + NL)
+  }
+
+  // mix: 1 s of constant 1000 plus 1 s of constant 2000 -> 16000 samples of 3000.
+  let a = [Int16](repeating: 1000, count: 16_000)
+  let b = [Int16](repeating: 2000, count: 16_000)
+  let m = mix(a, b)
+  check("mix-sum", m.count == 16_000 && m.allSatisfy { $0 == 3000 })
+
+  // clamp: 30000 + 30000 -> 32767.
+  let big = [Int16](repeating: 30_000, count: 100)
+  check("mix-clamp", mix(big, big).allSatisfy { $0 == 32767 })
+
+  // a 0.5 s gap in one stream gives that stream's zeros, not a shorter file.
+  let half = [Int16](repeating: 1000, count: 8_000)
+  let gapped = mix(a, half)
+  check("mix-gap", gapped.count == 16_000 && gapped[0 ..< 8_000].allSatisfy { $0 == 2000 } && gapped[8_000...].allSatisfy { $0 == 1000 })
+
+  // zero-detection.
+  check("zero-all-zero", systemStreamIsSilent(peak: 0, bytes: 32_000, started: true))
+  check("zero-nonzero", !systemStreamIsSilent(peak: 100, bytes: 32_000, started: true))
+  check("zero-not-started", !systemStreamIsSilent(peak: 0, bytes: 32_000, started: false))
+
+  // issue: never started, no bytes, silent-with-output, genuine silence.
+  check("issue-not-started", systemCaptureIssue(bytes: 0, peak: 0, started: false, hadTappedOutput: false) != nil)
+  check("issue-no-bytes", systemCaptureIssue(bytes: 0, peak: 0, started: true, hadTappedOutput: false) != nil)
+  check("issue-silent-with-output", systemCaptureIssue(bytes: 32_000, peak: 0, started: true, hadTappedOutput: true) != nil)
+  check("issue-genuine-silence", systemCaptureIssue(bytes: 32_000, peak: 0, started: true, hadTappedOutput: false) == nil)
+
+  return ok ? 0 : 1
 }
 
 func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
@@ -379,7 +521,7 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
 
   let micWriter = PcmWriter(meetingDir + "/mic.pcm")
   let sysWriter = PcmWriter(meetingDir + "/system.pcm")
-  let mixWriter = MixWriter(meetingDir + "/audio.pcm")
+  let mixer = Mixer(meetingDir + "/audio.pcm")
 
   // ── microphone (AVAudioEngine, default input) ─────────────────────────
   let micEngine = AVAudioEngine()
@@ -412,7 +554,7 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
       let samples = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
       let pcm = samples.map { Int16(max(-1.0, min(1.0, Double($0))) * 32767.0) }
       micWriter.write(pcm)
-      mixWriter.write(pcm)
+      mixer.appendMic(pcm)
     }
   }
   micEngine.prepare()
@@ -425,17 +567,24 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
 
   // ── system audio (process tap + private aggregate device + IO proc) ────
   var systemStarted = false
+  var systemTapID: AudioObjectID? = nil
+  var systemAggID: AudioObjectID? = nil
+  var systemIOProcID: AudioDeviceIOProcID? = nil
+  let hadTappedOutput = !resolveTapObjects(bundleIds).isEmpty
   if let (tapID, uid) = createSystemTap(bundleIds), let aggID = createAggregate(tapUID: uid) {
+    systemTapID = tapID
+    systemAggID = aggID
     let asbd = tapFormat(tapID)
+    let sysConverter = SystemTapConverter(asbd: asbd)
     var ioProcID: AudioDeviceIOProcID? = nil
     let status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggID, nil) { _now, inInputData, _inInputTime, _outOutputData, _inOutputTime in
-      let mono = monoFloat(inInputData)
-      let srcRate = Double(asbd.mSampleRate > 0 ? asbd.mSampleRate : 48000)
-      let pcm = resampleMono(mono, srcRate: srcRate)
+      guard let conv = sysConverter else { return }
+      let pcm = conv.toInt16(inInputData)
       sysWriter.write(pcm)
-      mixWriter.write(pcm)
+      mixer.appendSys(pcm)
     }
     if status == noErr {
+      systemIOProcID = ioProcID
       let startStatus = AudioDeviceStart(aggID, ioProcID)
       systemStarted = (startStatus == noErr)
       if !systemStarted {
@@ -448,37 +597,72 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String]) {
     appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "warn", "msg": "system audio tap could not be created (System Audio Recording permission)"])
   }
 
+  var lastBeat = Date()
   while !stopRequested {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    let now = Date()
+    if now.timeIntervalSince(lastBeat) >= 1.0 {
+      lastBeat = now
+      stateJson(meetingDir, "in_meeting", startedAt, nil,
+                audioSeconds: Double(micWriter.bytes) / 2.0 / Double(SAMPLE_RATE),
+                audioBytes: micWriter.bytes + sysWriter.bytes)
+    }
+    // The host writes stop.request to ask us to stop (the same signal the bot polls).
+    if FileManager.default.fileExists(atPath: meetingDir + "/stop.request") {
+      stopRequested = true
+    }
+  }
+
+  // Stop the system IO first so no writer is written while it is being closed.
+  if let aggID = systemAggID, let ioProcID = systemIOProcID {
+    AudioDeviceStop(aggID, ioProcID)
+    AudioDeviceDestroyIOProcID(aggID, ioProcID)
+  }
+  if let aggID = systemAggID {
+    AudioHardwareDestroyAggregateDevice(aggID)
+  }
+  if let tapID = systemTapID {
+    AudioHardwareDestroyProcessTap(tapID)
   }
 
   micEngine.stop()
   micInput.removeTap(onBus: 0)
   micWriter.close()
   sysWriter.close()
-  mixWriter.close()
+  mixer.finish()
 
   // ── compressed copy for playback (audio.ogg, Opus) ─────────────────────
   if !compressOgg(meetingDir) {
     appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "warn", "msg": "audio.ogg was not produced (ffmpeg missing or failed); playback unavailable"])
   }
 
-  // ── zero-detection: an all-zero system stream must fail loudly ─────────
+  // ── finish (DESIGN §15, decision B5): a usable microphone recording is never thrown away. ──
   let micPeak = micWriter.peak
   let sysPeak = sysWriter.peak
-  if systemStreamIsSilent(peak: sysPeak, bytes: sysWriter.bytes, started: systemStarted) {
-    writeFailedState(meetingDir, startedAt, "Системный звук не записан: поток пуст (проверьте разрешение «Запись системного звука» для приложения BB)")
-    appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "error", "msg": "system stream is all-zero"])
-    exit(1)
-  }
-
+  let audioSeconds = Double(micWriter.bytes) / 2.0 / Double(SAMPLE_RATE)
+  let audioBytes = micWriter.bytes + sysWriter.bytes
   appendEvent(meetingDir + "/events.jsonl", [
     "t": nowMs(), "level": "info", "msg": "local recording stopped",
     "data": ["micBytes": micWriter.bytes, "systemBytes": sysWriter.bytes,
              "micPeak": micPeak, "systemPeak": sysPeak, "systemStarted": systemStarted],
   ])
 
-  stateJson(meetingDir, "ended", startedAt)
+  // Microphone empty or all-zero: a genuine recording failure, not a capture issue.
+  if micWriter.bytes == 0 || micPeak <= 0 {
+    writeFailedState(meetingDir, startedAt, "Микрофон пуст: запись невозможна (проверьте разрешение «Микрофон» для приложения BB)")
+    exit(1)
+  }
+
+  // System audio failed or is silent while a tapped process played: keep the recording,
+  // but surface a visible audioIssue (reason capture) naming the operation.
+  if let issue = systemCaptureIssue(bytes: sysWriter.bytes, peak: sysPeak, started: systemStarted, hadTappedOutput: hadTappedOutput) {
+    appendEvent(meetingDir + "/events.jsonl", ["t": nowMs(), "level": "warn", "msg": issue])
+    stateJson(meetingDir, "ended", startedAt, nil, audioSeconds: audioSeconds, audioBytes: audioBytes,
+              audioIssue: ["since": nowMs(), "attempts": 0, "lastAction": NSNull(), "message": issue, "reason": "capture"])
+    return
+  }
+
+  stateJson(meetingDir, "ended", startedAt, nil, audioSeconds: audioSeconds, audioBytes: audioBytes)
 }
 
 // ── main ────────────────────────────────────────────────────────────────
