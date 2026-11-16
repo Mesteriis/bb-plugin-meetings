@@ -116,9 +116,9 @@ export class FakeRuntime {
   env: EnvReport = envReport();
   failStart: string | null = null;
   profile = { exists: false, signedIn: false, path: "/home/bb/.bb/plugins/meetings/host-data/profiles/zoom", updatedAt: null as number | null };
-  ensureCalls: Array<{ meetingId: string; mode: string }> = [];
+  ensureCalls: Array<{ meetingId: string; mode: string; transcriber: Record<string, unknown> }> = [];
   localPollResult: { supported: boolean; detected: { appKey: string; label: string }[]; started: { appKey: string; label: string }[]; ended: { appKey: string; label: string }[]; error: string | null } = { supported: true, detected: [], started: [], ended: [], error: null };
-  localStartCalls: Array<{ meetingId: string; appKey: string }> = [];
+  localStartCalls: Array<{ meetingId: string; appKey: string; engine: string; glossary: string; ownerName: string }> = [];
   localPollError: string | null = null;
   controlSeq = 0;
   viewers: Array<{ meetingId: string; untilMs: number }> = [];
@@ -236,7 +236,7 @@ export class FakeRuntime {
       case "meeting.ensureTranscriber": {
         const id = args.meetingId as string;
         const meeting = this.get(id);
-        this.ensureCalls.push({ meetingId: id, mode: args.mode as string });
+        this.ensureCalls.push({ meetingId: id, mode: args.mode as string, transcriber: args.transcriber as Record<string, unknown> });
         if (args.mode === "offline") {
           meeting.final = false;
           meeting.segments = [];
@@ -288,7 +288,7 @@ export class FakeRuntime {
       }
       case "local.start": {
         const id = args.meetingId as string;
-        this.localStartCalls.push({ meetingId: id, appKey: args.appKey as string });
+        this.localStartCalls.push({ meetingId: id, appKey: args.appKey as string, engine: args.engine as string, glossary: args.glossary as string, ownerName: args.ownerName as string });
         this.meetings.set(id, {
           config: {} as BotConfig,
           exists: true,

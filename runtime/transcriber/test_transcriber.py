@@ -1170,7 +1170,7 @@ class LocalRecordingTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def make_transcriber(self, transcriber_extra=None):
+    def make_transcriber(self, transcriber_extra=None, whisper_impl=None):
         d = os.path.join(self.tmp, "mtg_local0001")
         os.makedirs(d)
         cfg = {
@@ -1201,7 +1201,7 @@ class LocalRecordingTests(unittest.TestCase):
             json.dump({"version": 1, "meetingId": "mtg_local0001", "pid": 123, "phase": "in_meeting",
                        "recordingStartedAt": 1000}, f)
         args = types.SimpleNamespace(meeting_dir=d, mode="offline", models_dir="", gigaam_url=None, host_data="", threads=None)
-        return d, tr.Transcriber(args)
+        return d, tr.Transcriber(args, whisper_impl=whisper_impl)
 
     def test_engine_selection_whisper(self):
         _, t = self.make_transcriber()
@@ -1213,24 +1213,91 @@ class LocalRecordingTests(unittest.TestCase):
         self.assertEqual(t.engine, "gigaam")
         self.assertIsInstance(t.asr, tr.AsrClient)
 
-    def test_local_timeline_attributes_mic_to_owner(self):
-        d, t = self.make_transcriber()
-        t.rec_start = 1000.0
+    def _synthetic_local_meeting(self):
+        """Owner sine at 1-3 s and 7-9 s, remote sine at 4-6 s; audio.pcm = the mix.
+        A 1 s leading silence lets the energy VAD estimate its floor on silence."""
+        d = os.path.join(self.tmp, "mtg_local0002")
+        os.makedirs(d)
         sr = tr.SAMPLE_RATE
-        # 0.4 s of digital silence, 1.0 s of a 440 Hz sine at half scale, 0.4 s silence again.
-        x = np.concatenate([
-            np.zeros(int(0.4 * sr), dtype=np.float32),
-            (0.5 * np.sin(2 * np.pi * 440 * np.arange(int(1.0 * sr)) / sr)).astype(np.float32),
-            np.zeros(int(0.4 * sr), dtype=np.float32),
-        ])
-        with open(os.path.join(d, "mic.pcm"), "wb") as f:
-            f.write((x * 32767.0).astype(np.int16).tobytes())
-        t._build_local_timeline()
-        with open(os.path.join(d, "speakers.jsonl"), encoding="utf-8") as f:
-            lines = [json.loads(line) for line in f]
-        self.assertTrue(lines, "no speakers.jsonl lines were written")
-        owners = [ev for ev in lines if ev.get("src") == "local-mic" and ev.get("speakers") == ["Я"]]
-        self.assertTrue(owners, f"no owner-attributed line in {lines}")
+        total = 9.0
+        n = int(total * sr)
+        t = np.arange(n) / sr
+        owner = np.zeros(n, dtype=np.float32)
+        remote = np.zeros(n, dtype=np.float32)
+        for a, b in ((1.0, 3.0), (7.0, 9.0)):
+            seg = np.arange(int(a * sr), int(b * sr))
+            owner[seg] = (0.5 * np.sin(2 * np.pi * 440 * t[seg])).astype(np.float32)
+        for a, b in ((4.0, 6.0),):
+            seg = np.arange(int(a * sr), int(b * sr))
+            remote[seg] = (0.5 * np.sin(2 * np.pi * 440 * t[seg])).astype(np.float32)
+        mix = np.clip(owner + remote, -1.0, 1.0)
+        for name, x in (("mic.pcm", owner), ("system.pcm", remote), ("audio.pcm", mix)):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write((x * 32767.0).astype(np.int16).tobytes())
+        cfg = {
+            "version": 1, "meetingId": "mtg_local0002", "platform": "local",
+            "sourceApp": "zoom", "sourceLabel": "Zoom", "url": "local://zoom", "ownerName": "Я", "createdAt": 0,
+            "transcriber": {"gigaamUrl": None, "diarization": "ui+acoustic", "speakerLagMs": 700,
+                            "keepRawAudio": True, "threads": 0, "engine": "whisper", "language": "ru",
+                            "glossary": "", "ownerName": "Я"},
+        }
+        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        with open(os.path.join(d, "state.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "meetingId": "mtg_local0002", "pid": 123, "phase": "ended",
+                       "recordingStartedAt": 0, "audio": {"seconds": total, "bytes": n * 2}}, f)
+        return d
+
+
+    def _local_args(self, d, mode):
+        return types.SimpleNamespace(meeting_dir=d, mode=mode, models_dir="", gigaam_url=None, host_data="", threads=None)
+
+    def test_offline_local_attribution_owner_remote_owner(self):
+        d = self._synthetic_local_meeting()
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        self.assertEqual(tr.Transcriber(self._local_args(d, "offline"), whisper_impl=impl).run(), 0)
+        transcript = read_json(os.path.join(d, "transcript.json"))
+        self.assertIsNotNone(transcript)
+        self.assertEqual(transcript["asr"]["engine"], "whisper")
+        labels = [s["speaker"] for s in transcript["segments"]]
+        self.assertGreaterEqual(len(labels), 3, labels)
+        self.assertEqual(labels[0], "Я")
+        self.assertNotEqual(labels[1], "Я")
+        self.assertEqual(labels[2], "Я")
+
+    def test_offline_local_twice_identical(self):
+        d = self._synthetic_local_meeting()
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        args = self._local_args(d, "offline")
+        self.assertEqual(tr.Transcriber(args, whisper_impl=impl).run(), 0)
+        first = read_json(os.path.join(d, "transcript.json"))
+        self.assertEqual(tr.Transcriber(args, whisper_impl=impl).run(), 0)
+        second = read_json(os.path.join(d, "transcript.json"))
+        # Everything but the createdAt timestamp is identical (no accumulated speakers.jsonl lines).
+        first.pop("createdAt", None)
+        second.pop("createdAt", None)
+        self.assertEqual(first, second)
+
+    def test_live_local_runner_finishes(self):
+        d = self._synthetic_local_meeting()
+        with open(os.path.join(d, "state.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "meetingId": "mtg_local0002", "pid": 123, "phase": "ended",
+                       "recordingStartedAt": 0}, f)
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        self.assertEqual(tr.Transcriber(self._local_args(d, "live"), whisper_impl=impl).run(), 0)
+        transcript = read_json(os.path.join(d, "transcript.json"))
+        self.assertIsNotNone(transcript)
+        self.assertEqual(transcript["asr"]["engine"], "whisper")
+
 
     def test_whisper_calls_serialized(self):
         state = {"active": 0, "max": 0}

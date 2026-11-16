@@ -500,8 +500,11 @@ async function updateConfigTranscriber(dir: string, transcriber: TranscriberConf
   if (config === null || typeof config !== "object" || Array.isArray(config)) {
     throw new Error(`В каталоге встречи нет корректного config.json: ${dir}`);
   }
-  // Preserve the meeting's own shape (bot or local): only the transcriber block is replaced.
-  await writeJsonAtomic(file(dir, F.config), { ...(config as Record<string, unknown>), transcriber });
+  // Preserve the meeting's own shape and any transcriber fields the server does not know about
+  // (a local recording's engine/language/glossary/ownerName): merge, not replace.
+  const current = config as Record<string, unknown>;
+  const currentTranscriber = (typeof current.transcriber === "object" && current.transcriber !== null ? current.transcriber : {}) as Record<string, unknown>;
+  await writeJsonAtomic(file(dir, F.config), { ...current, transcriber: { ...currentTranscriber, ...transcriber } });
 }
 
 export interface EnsureTranscriberInput {
