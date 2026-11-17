@@ -147,6 +147,8 @@ export interface MeetingOptions {
   transcriberMarkAt?: number;
   /** When the server first saw the bot dead with a non-terminal state (crash confirmation). */
   botDeadSince?: number;
+  /** Local recording: invitees of the calendar event it was matched to (candidates for speaker names). */
+  calendarAttendees?: string[];
 }
 
 export interface StoredSpeaker {

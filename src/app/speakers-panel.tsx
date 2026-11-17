@@ -6,6 +6,7 @@ import { Icon } from "@/components/ui/icon";
 import { formatDuration, formatPercent } from "./format";
 import { useAsyncAction } from "./hooks";
 import { useMeetingsRpc } from "./rpc";
+import { SpeakerNaming } from "./speaker-naming";
 import { colorFor } from "./speaker-colors";
 import type { SpeakerStat } from "./transcript-model";
 import { EmptyState, ErrorText, InlineTextInput, Section } from "./ui";
@@ -119,6 +120,7 @@ export const SpeakersPanel = memo(function SpeakersPanel({
           ))}
         </ul>
       )}
+      {stats.length === 0 ? null : <SpeakerNaming meetingId={meetingId} />}
       {stats.length === 0 ? null : (
         <p className="mt-1.5 px-1 text-xs text-muted-foreground">
           Нажмите на карандаш, чтобы переименовать спикера во всей расшифровке. Пустое имя возвращает исходное.

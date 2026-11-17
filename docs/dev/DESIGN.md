@@ -1231,4 +1231,15 @@ person by themselves.
 * **Management.** `voices.list` and `voices.forget` (host and page RPC); the
   recording settings tab lists the voices and forgets them one by one.
   Voiceprints stay in host data and are never sent anywhere.
-
+* **Names from the transcript.** `meetings.namingPrompt` (page RPC) builds a
+  request for a BB agent (src/server/speaker-naming.ts): the meeting, the
+  speakers still without a name with their share of speech, the ones already
+  named (not to be touched), the invitees of the calendar event the recording
+  was matched to (kept in the row's options.calendarAttendees), and the rule
+  to name only on evidence. The speakers panel shows it in BB's own
+  new-thread composer (`experimental_NewThreadComposer`), where the owner
+  picks the model and may edit the request; submitting spawns a thread
+  (`threads.spawn`). The agent reads with `meetings_transcript` and names
+  with `meetings_rename_speaker`, so each name goes through renameSpeaker and
+  is remembered as a voice. The transcript goes to the model the owner chose.
+  Not run end to end yet.

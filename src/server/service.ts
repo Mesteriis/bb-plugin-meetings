@@ -2,6 +2,7 @@
 // the registry, talks to the host entry on the recording machine, maps runtime
 // snapshots to statuses, ingests segments, notifies threads and runs the
 // scheduler/reconcile loop. RPC, CLI, tools and HTTP are thin layers over it.
+import { buildNamingPrompt } from "./speaker-naming.js";
 import type { BbPluginApi, ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import { MAX_SEGMENTS_PAGE, type EnvReport, type HostContract, type RuntimeSnapshot } from "../shared/contract.js";
@@ -1218,9 +1219,12 @@ export class MeetingsService {
           this.bb.log.warn(`No calendar title for ${id}: calendar access is ${found.access}`);
           return;
         }
+        const row = this.repo.getMeeting(id);
+        if (found.title === null || row === null) return;
+        // The invitees are candidates for speaker names (namingPrompt), whoever titled the meeting.
+        const options = { ...row.options, calendarAttendees: found.attendees.slice(0, 50) };
         // Not over a title the owner has typed meanwhile.
-        if (found.title === null || this.repo.getMeeting(id)?.title !== defaultTitle) return;
-        this.repo.updateMeeting(id, { title: found.title.slice(0, 200) });
+        this.repo.updateMeeting(id, row.title === defaultTitle ? { title: found.title.slice(0, 200), options } : { options });
         this.publishMeeting(id);
       })
       .catch((error: unknown) => this.bb.log.warn(`No calendar title for ${id}: ${errorMessage(error)}`))
@@ -1496,6 +1500,27 @@ export class MeetingsService {
       .catch((error: unknown) => this.bb.log.warn(`Could not remember a voice from ${row.id}: ${errorMessage(error)}`))
       .finally(() => this.voiceTasks.delete(task));
     this.voiceTasks.add(task);
+  }
+
+  /** The request for an agent that names this meeting's speakers from what was said. */
+  namingPrompt(id: string): string {
+    const row = this.requireMeeting(id);
+    if (!row.transcriptFinal) {
+      throw new MeetingsError("still_recording", "Дождитесь окончательного транскрипта встречи", "Wait for the final transcript before naming speakers");
+    }
+    const total = row.speakers.reduce((sum, speaker) => sum + speaker.talkSec, 0);
+    return buildNamingPrompt({
+      meetingId: row.id,
+      title: row.title,
+      ownerName: row.botName,
+      speakers: row.speakers.map((speaker) => ({
+        key: speaker.key,
+        label: row.speakerNames[speaker.key] || speaker.label,
+        talkSec: speaker.talkSec,
+        share: total > 0 ? speaker.talkSec / total : 0,
+      })),
+      attendees: row.options.calendarAttendees ?? [],
+    });
   }
 
   /** Test hook: resolves when the voices being remembered have been. */

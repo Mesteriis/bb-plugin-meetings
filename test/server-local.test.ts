@@ -210,6 +210,29 @@ describe("local recording auto-record", () => {
     expect(await loaded.service.forgetVoice("Анна")).toEqual([]);
   });
 
+  it("builds the speaker naming request from the meeting, its speakers and the calendar's invitees", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.calendarLookup = { access: "granted", title: "Созвон с заказчиком", attendees: ["Анна Смирнова"] };
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    expect(() => loaded.service.namingPrompt(id)).toThrow(/Дождитесь окончательного транскрипта/);
+    (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown } }).repo.updateMeeting(id, {
+      transcriptFinal: true,
+      speakers: [
+        { key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 90, segments: 9 },
+        { key: "ui:Я", label: "Я", source: "ui", talkSec: 30, segments: 4 },
+      ],
+    });
+    const prompt = loaded.service.namingPrompt(id);
+    expect(prompt).toContain(`«Созвон с заказчиком» (id: ${id})`);
+    expect(prompt).toContain("- spk:1 — «Спикер 1», 1 мин 30 с, 75 % речи");
+    expect(prompt).toContain("Уже названы, не переименовывай: «Я» (ui:Я).");
+    expect(prompt).toContain("Приглашённые по календарю (кто-то мог не прийти, мог прийти кто-то ещё): Анна Смирнова.");
+  });
+
   it("names a local recording after the calendar event it belongs to", async () => {
     const loaded = await load({ settings: macSettings(), now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });

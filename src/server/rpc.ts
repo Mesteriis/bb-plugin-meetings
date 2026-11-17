@@ -97,6 +97,7 @@ export function registerRpc(bb: BbPluginApi, service: MeetingsService): void {
     "google.sync": () => service.google.sync(),
     "google.disconnect": () => service.google.disconnect(),
 
+    "meetings.namingPrompt": ({ id }) => ({ prompt: service.namingPrompt(id) }),
     "voices.list": async () => ({ voices: await service.listVoices() }),
     "voices.forget": async ({ name }) => ({ voices: await service.forgetVoice(name) }),
     "env.status": () => service.envStatus(),
