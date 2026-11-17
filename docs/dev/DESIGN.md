@@ -1170,16 +1170,25 @@ the system audio) locally, then transcribes with the same pipeline.
   The transcriber cuts a VAD segment where the louder side changes between
   mic.pcm and system.pcm (source_split_offsets; a side must hold 1.2 s),
   attributes microphone-dominant pieces to ownerName (default «Я») and
-  resolves the rest by voice. The final pass always keeps the owner's label
-  (local_final_mode), whatever the bot-oriented diarization setting says, and
+  resolves the rest by voice. In the final pass the voice decides who the
+  owner is (owner_coverage): a voice is the owner's when more than half of
+  its speech was microphone-dominant, and every piece follows its voice. A
+  single microphone-dominant piece proves nothing, because with speakers
+  instead of headphones the remote side reaches the microphone too: on the
+  second real call three people were merged into the owner (57 % of the
+  speech) through two or three such pieces each. The final pass always keeps
+  the owner's label (local_final_mode), whatever the bot-oriented diarization
+  setting says, and
   finds the remote voices among pieces of 3 s and longer, then gives every
   piece to the nearest voice (cluster_anchored): on the first real call,
   clustering every piece made 84 speakers out of six people. This is an energy heuristic:
   overlapping speech goes to the louder side, turns shorter than 1.2 s are
   absorbed by their neighbour, and with no system stream every piece is the
   owner's. With keepRawAudio off, mic.pcm
-  and system.pcm are removed after the final transcript, so a later
-  retranscribe has no owner attribution.
+  and system.pcm are removed after the final transcript; the helper leaves
+  their Opus copies mic.ogg and system.ogg, and an offline run decodes them
+  back (_restore_streams) so a retranscription still knows the owner.
+  Recordings made before the copies existed have none.
 * **Speech engine.** engine "whisper" (default on macOS) runs mlx-whisper with
   mlx-community/whisper-large-v3-turbo in-process, chosen over a managed server
   because it keeps the existing detached-transcriber model (no new long-lived

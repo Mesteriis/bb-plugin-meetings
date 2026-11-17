@@ -9,7 +9,8 @@
 //   record --meeting-dir <dir> [--bundle-ids id,id,...]  record mic + system audio
 //
 // Files: audio.pcm (s16le 16 kHz mono, mic + system mixed, what the transcriber
-// reads), mic.pcm (mic only), system.pcm (system only), state.json / events.jsonl
+// reads), mic.pcm (mic only), system.pcm (system only), their Opus copies
+// audio.ogg, mic.ogg and system.ogg written at the end, state.json / events.jsonl
 // (bot shapes).
 
 import AVFoundation
@@ -591,9 +592,9 @@ final class SystemTapConverter {
 }
 
 /// Compress audio.pcm (s16le 16 kHz mono) to audio.ogg (Opus 48 kHz mono), like bot mode.
-func compressOgg(_ meetingDir: String) -> Bool {
-  let pcm = meetingDir + "/audio.pcm"
-  let ogg = meetingDir + "/audio.ogg"
+func compressOgg(_ meetingDir: String, _ name: String = "audio") -> Bool {
+  let pcm = meetingDir + "/" + name + ".pcm"
+  let ogg = meetingDir + "/" + name + ".ogg"
   let process = Process()
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   process.arguments = [
@@ -1240,8 +1241,8 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
   var issue: String? = nil
   var issueSince: Int64 = 0
   /// Recompute the capture issue; log it and stamp it when it appears or changes.
-  func refreshIssue(final: Bool) {
-    let parts = [microphoneIssue(microphoneStatus(), final: final), systemCaptureIssue(system.snapshot, final: final)].compactMap { $0 }
+  func refreshIssue(final: Bool, microphone: MicrophoneStatus? = nil) {
+    let parts = [microphoneIssue(microphone ?? microphoneStatus(), final: final), systemCaptureIssue(system.snapshot, final: final)].compactMap { $0 }
     let next = parts.isEmpty ? nil : parts.joined(separator: " ")
     guard next != issue else { return }
     issue = next
@@ -1293,6 +1294,9 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
     writeState("in_meeting")
   }
 
+  // The microphone as it was while recording: after the stop no buffers arrive, and
+  // compressing a long recording takes longer than the stall limit.
+  let microphoneAtStop = microphoneStatus()
   // Stop both paths, then close the files: nothing is accepted or counted after finish().
   system.stop()
   microphone.stop()
@@ -1300,6 +1304,11 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
 
   if !compressOgg(meetingDir) {
     appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "audio.ogg was not produced (ffmpeg missing or failed); playback unavailable"])
+  }
+  // The two streams stay as compressed copies: a later retranscription needs them
+  // to tell the owner from the remote side once the raw PCM has been removed.
+  for stream in ["mic", "system"] where !compressOgg(meetingDir, stream) {
+    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "\(stream).ogg was not produced; a retranscription will not know the owner's pieces"])
   }
 
   let mic = streams.stats(RecordingStreams.mic)
@@ -1310,7 +1319,7 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
              "systemStarted": system.snapshot.started],
   ])
 
-  refreshIssue(final: true)
+  refreshIssue(final: true, microphone: microphoneAtStop)
   // Neither stream has sound: nothing usable was recorded.
   if mic.peak <= 0 && sys.peak <= 0 {
     writeFailedState(meetingDir, startedAt, issue ?? "Запись пуста: ни микрофон, ни системный звук не дали сигнала")
