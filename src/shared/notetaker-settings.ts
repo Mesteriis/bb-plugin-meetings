@@ -54,6 +54,11 @@ export const notetakerSettingsPatchSchema = z.object({
   localEngine: z.enum(["whisper", "gigaam"]),
   localLanguage: z.string().max(200),
   localGlossary: z.string().max(4000),
+  localFinalModel: z.enum(["turbo", "large-v3"]),
+  /** One rule per line: a calendar title containing it is not recorded. */
+  localSkipTitles: z.string().max(4000),
+  /** Delete recordings' audio after this many days; 0 = keep. */
+  audioRetentionDays: z.number().int().min(0).max(3650),
   /** JSON array of enabled appKeys; empty = all supported apps. */
   localApps: z.string().max(2000),
 }).partial().strict();

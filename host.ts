@@ -67,10 +67,10 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
   "env.check": async ({ chromePath, gigaamUrl }, context) =>
     checkEnv(pathsFor(context.experimental_paths.dataDir), { chromePath, gigaamUrl }),
 
-  "env.setup": async ({ force, chromePath, gigaamUrl }, context) => {
+  "env.setup": async ({ force, chromePath, gigaamUrl, finalModel }, context) => {
     const paths = pathsFor(context.experimental_paths.dataDir);
     // The lease keeps the worker alive for the whole background install.
-    await startSetup(paths, { force, chromePath }, () => context.experimental_retainWorker());
+    await startSetup(paths, { force, chromePath, finalModel }, () => context.experimental_retainWorker());
     return checkEnv(paths, { chromePath, gigaamUrl });
   },
 
@@ -148,8 +148,8 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
   "voices.retract": async (input, context) => ({ retracted: await retractVoice(pathsFor(context.experimental_paths.dataDir), input, Date.now()) }),
   "voices.list": async (_input, context) => ({ voices: await listVoices(pathsFor(context.experimental_paths.dataDir)) }),
   "voices.forget": async ({ name }, context) => ({ forgotten: await forgetVoice(pathsFor(context.experimental_paths.dataDir), name) }),
-  "local.setRoster": async ({ meetingId, roster }, context) => ({
-    ok: await setTranscriberRoster(pathsFor(context.experimental_paths.dataDir), meetingId, roster),
+  "local.setRoster": async ({ meetingId, roster, hints }, context) => ({
+    ok: await setTranscriberRoster(pathsFor(context.experimental_paths.dataDir), meetingId, roster, hints),
   }),
   "local.calendarEvent": async ({ appKey, at }, context) => lookupCalendarEvent(pathsFor(context.experimental_paths.dataDir), appKey, at),
   "local.start": async (input, context) => startLocalMeeting(pathsFor(context.experimental_paths.dataDir), input),

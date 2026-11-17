@@ -18,6 +18,9 @@ function macSettings() {
     localEngine: "whisper",
     localLanguage: "ru",
     localGlossary: "",
+    localFinalModel: "turbo",
+    localSkipTitles: "",
+    audioRetentionDays: 0,
     localApps: "",
   };
 }
@@ -241,7 +244,7 @@ describe("local recording auto-record", () => {
     await loaded.service.pollLocalDetection();
     await loaded.service.localTitlesSettled();
     const id = loaded.service.list("all", 50, null).meetings[0]!.id;
-    expect(loaded.fake.rosterCalls).toEqual([{ meetingId: id, roster: ["a.smirnova@x.io", "b.orlov@x.io"] }]);
+    expect(loaded.fake.rosterCalls).toEqual([{ meetingId: id, roster: ["a.smirnova@x.io", "b.orlov@x.io"], hints: ["Дейли", "Анна Смирнова"] }]);
     const row = (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): { options: object } } }).repo.updateMeeting(id, {
       speakers: [{ key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 }],
     });
@@ -277,6 +280,25 @@ describe("local recording auto-record", () => {
     expect(loaded.fake.voiceLearnCalls).toEqual([]);
     expect(loaded.fake.voiceRetractCalls).toEqual([{ meetingId: id, speakerKey: "spk:1" }]);
     expect(loaded.fake.voiceOrder).toEqual(["retract", "forget"]);
+  });
+
+  it("does not keep a recording whose calendar title matches a skip rule", async () => {
+    const loaded = await load({ settings: { ...macSettings(), localSkipTitles: "личное\n1:1" }, now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.calendarLookup = { access: "granted", title: "Анна / Пётр 1:1", attendees: [] };
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    expect(loaded.service.list("all", 50, null).meetings).toEqual([]);
+    expect(loaded.fake.rosterCalls).toEqual([]);
+  });
+
+  it("asks for the exact model in the final pass only when the owner chose it", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    const row = { source: "local", options: {} };
+    const settings = { ...macSettings(), diarization: "ui+acoustic", speakerLagMs: 700, keepRawAudio: false };
+    expect(loaded.service.transcriberConfigFor(row as never, settings as never, null)).not.toHaveProperty("finalModel");
+    expect(loaded.service.transcriberConfigFor(row as never, { ...settings, localFinalModel: "large-v3" } as never, null)).toMatchObject({ finalModel: "large-v3" });
   });
 
   it("leaves the stored roster alone when the meeting has no calendar invitees", async () => {

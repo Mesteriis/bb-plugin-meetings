@@ -166,7 +166,7 @@ describe("startSetup", () => {
     const dataDir = await tempDir();
     const harness = experimental_createHostEntryHarness(hostEntry, { experimental_paths: { dataDir, tempDir: await tempDir() } });
     // Disposing right away aborts the run before it downloads anything substantial.
-    const report = await harness.experimental_call("env.setup", { force: false, chromePath: "", gigaamUrl: "http://127.0.0.1:9" });
+    const report = await harness.experimental_call("env.setup", { force: false, chromePath: "", gigaamUrl: "http://127.0.0.1:9", finalModel: false });
     expect(report.setup.phase).toBe("running");
     expect(harness.experimental_getRetainedWorkerLeaseCount()).toBe(1);
     await harness.experimental_dispose(); // aborts the run

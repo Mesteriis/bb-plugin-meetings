@@ -3,7 +3,7 @@
 // snapshots to statuses, ingests segments, notifies threads and runs the
 // scheduler/reconcile loop. RPC, CLI, tools and HTTP are thin layers over it.
 import { buildNamingPrompt } from "./speaker-naming.js";
-import { rosterKeys } from "./roster.js";
+import { calendarHints, rosterKeys, titleIsSkipped } from "./roster.js";
 import type { BbPluginApi, ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import { MAX_SEGMENTS_PAGE, type EnvReport, type HostContract, type RuntimeSnapshot } from "../shared/contract.js";
@@ -585,6 +585,7 @@ export class MeetingsService {
       // Absent when the row knows no invitees: the roster already in config.json stays (a row
       // read before the calendar answered must not erase it).
       ...(roster.length > 0 ? { roster } : {}),
+      ...(settings.localFinalModel === "large-v3" ? { finalModel: "large-v3" as const } : {}),
     };
   }
 
@@ -1201,7 +1202,7 @@ export class MeetingsService {
       );
       this.repo.updateMeeting(id, { hostId, startedAt: now });
       await this.withLock(id, () => this.applySnapshot(this.requireMeeting(id), snapshot, signal));
-      if (settings.localCalendarTitles) this.nameFromCalendar(id, appKey, hostId, now);
+      if (settings.localCalendarTitles) this.nameFromCalendar(id, appKey, hostId, now, settings.localSkipTitles);
     } catch (error) {
       this.bb.log.warn(`Could not start local recording for ${appKey}: ${errorMessage(error)}`);
       this.repo.updateMeeting(id, { status: "failed", statusDetail: "Не удалось начать локальную запись", errorCode: "unknown", errorMessage: errorMessage(error), endedAt: this.now() });
@@ -1218,7 +1219,7 @@ export class MeetingsService {
    * background: the first lookup can wait on the owner answering macOS's
    * calendar prompt, and the recording must not wait for a title.
    */
-  private nameFromCalendar(id: string, appKey: string, hostId: string, at: number): void {
+  private nameFromCalendar(id: string, appKey: string, hostId: string, at: number, skipTitles: string): void {
     const defaultTitle = this.requireMeeting(id).title;
     const task = this.call("local.calendarEvent", { appKey, at }, { hostId, timeoutMs: 40_000 })
       .then((found) => {
@@ -1228,13 +1229,19 @@ export class MeetingsService {
         }
         const row = this.repo.getMeeting(id);
         if (found.title === null || row === null) return;
+        if (titleIsSkipped(found.title, skipTitles)) {
+          // The owner's rule: this meeting is not to be recorded. What was captured so far goes too.
+          this.bb.log.info(`Local recording ${id} dropped: its calendar title matches a skip rule`);
+          return this.delete(id).then(() => undefined);
+        }
         // The invitees are candidates for speaker names (namingPrompt), whoever titled the meeting.
         const options = { ...row.options, calendarAttendees: found.attendees.slice(0, 50) };
         // Not over a title the owner has typed meanwhile.
         this.repo.updateMeeting(id, row.title === defaultTitle ? { title: found.title.slice(0, 200), options } : { options });
         this.publishMeeting(id);
         // The transcriber reads the roster in its final pass, as a hint for known voices.
-        return this.call("local.setRoster", { meetingId: id, roster: rosterKeys(options.calendarAttendees) }, { hostId, timeoutMs: 15_000 }).then(() => undefined);
+        const hints = calendarHints(found.title, options.calendarAttendees);
+        return this.call("local.setRoster", { meetingId: id, roster: rosterKeys(options.calendarAttendees), hints }, { hostId, timeoutMs: 15_000 }).then(() => undefined);
       })
       .catch((error: unknown) => this.bb.log.warn(`No calendar title for ${id}: ${errorMessage(error)}`))
       .finally(() => this.titleLookups.delete(task));
@@ -1695,7 +1702,7 @@ export class MeetingsService {
     const settings = await this.settings.get();
     const report = await this.call(
       "env.setup",
-      { force, chromePath: settings.chromePath.trim(), gigaamUrl: settings.gigaamUrl.trim() },
+      { force, chromePath: settings.chromePath.trim(), gigaamUrl: settings.gigaamUrl.trim(), finalModel: settings.localFinalModel === "large-v3" },
       { timeoutMs: 30_000 },
     );
     this.envCache = { at: this.now(), report };

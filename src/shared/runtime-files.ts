@@ -37,6 +37,12 @@ export const transcriberConfigSchema = z
     roster: z.array(z.string().max(200)).max(100).optional(),
     /** Local recording: the directory of the downloaded Whisper model (host path). */
     whisperModel: z.string().max(4096).optional(),
+    /** The owner wants the transcript that stays made by the exact model. */
+    finalModel: z.enum(["large-v3"]).optional(),
+    /** Host path of that model when it is downloaded; "" = use whisperModel. Written by the host. */
+    whisperFinalModel: z.string().max(4096).optional(),
+    /** What the calendar knows about the meeting (title, invitee names): appended to the ASR prompt. */
+    hints: z.array(z.string().max(200)).max(40).optional(),
   })
   .strict();
 export type TranscriberConfig = z.infer<typeof transcriberConfigSchema>;

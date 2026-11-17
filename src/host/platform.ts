@@ -128,6 +128,12 @@ export const WHISPER_MODEL = {
   diskBytes: 1_650_000_000,
 } as const;
 
+/** The exact model for final transcripts, downloaded only when the owner chooses it. */
+export const WHISPER_FINAL_MODEL = {
+  repo: "mlx-community/whisper-large-v3-mlx",
+  diskBytes: 3_100_000_000,
+} as const;
+
 /** Minimum macOS the capture helper supports (process taps need 14.4+). */
 export const MIN_MACOS_MAJOR = 14;
 export const MIN_MACOS_MINOR = 4;

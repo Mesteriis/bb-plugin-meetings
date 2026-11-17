@@ -124,7 +124,15 @@ export const hostContract = defineRpcContract({
   "env.setup": {
     experimental_description:
       "Start installing missing runtime pieces in the background (system packages only with passwordless sudo); returns at once.",
-    input: z.object({ force: z.boolean(), chromePath: z.string(), gigaamUrl: z.string() }).strict(),
+    input: z
+      .object({
+        force: z.boolean(),
+        chromePath: z.string(),
+        gigaamUrl: z.string(),
+        /** Also download the exact Whisper model for final transcripts (macOS). */
+        finalModel: z.boolean(),
+      })
+      .strict(),
     output: envReportSchema,
   },
   "gigaam.discover": {
@@ -362,7 +370,14 @@ export const hostContract = defineRpcContract({
   },
   "local.setRoster": {
     experimental_description: "Record a meeting's calendar roster in its config.json for the transcriber's final pass.",
-    input: z.object({ meetingId: meetingIdSchema, roster: z.array(z.string().max(200)).max(100) }).strict(),
+    input: z
+      .object({
+        meetingId: meetingIdSchema,
+        roster: z.array(z.string().max(200)).max(100),
+        /** The meeting's title and invitee names for the ASR prompt. */
+        hints: z.array(z.string().max(200)).max(40),
+      })
+      .strict(),
     output: z.object({ ok: z.boolean() }).strict(),
   },
   "local.calendarEvent": {

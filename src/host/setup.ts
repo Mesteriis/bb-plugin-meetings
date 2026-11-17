@@ -20,6 +20,7 @@ import {
   PLAYWRIGHT_CORE,
   PYTHON_VERSION,
   UV_VERSION,
+  WHISPER_FINAL_MODEL,
   WHISPER_MODEL,
   isMacArm64,
   platformProblem,
@@ -36,6 +37,8 @@ export interface SetupOptions {
   /** Reinstall the user-level pieces even if they look fine. */
   readonly force: boolean;
   readonly chromePath: string;
+  /** macOS: also download the exact Whisper model for final transcripts. */
+  readonly finalModel?: boolean;
 }
 
 export interface WorkerLease {
@@ -537,6 +540,28 @@ async function whisperStep(paths: HostPaths, options: SetupOptions, context: Ste
   return [];
 }
 
+/** macOS: the exact Whisper model, when the owner chose it for final transcripts. */
+async function whisperFinalStep(paths: HostPaths, options: SetupOptions, context: StepContext): Promise<string[]> {
+  if (options.finalModel !== true) return [];
+  // The marker is written after a complete download: an interrupted one is resumed, not trusted.
+  const marker = path.join(paths.whisperFinalModel, ".complete");
+  if (!options.force && (await statOrNull(marker)) !== null) return [];
+  if ((await statOrNull(paths.venvPython)) === null) return ["Точная модель Whisper не загружена: сначала создайте Python-окружение"];
+  await context.progress("Скачиваю точную модель Whisper large-v3 (~" + (WHISPER_FINAL_MODEL.diskBytes / 1e9).toFixed(1) + " ГБ)");
+  const script = [
+    "from huggingface_hub import snapshot_download",
+    "snapshot_download(repo_id=" + JSON.stringify(WHISPER_FINAL_MODEL.repo) + ", local_dir=" + JSON.stringify(paths.whisperFinalModel) + ")",
+  ].join("; ");
+  await runChecked(paths.venvPython, ["-I", "-c", script], {
+    timeoutMs: 60 * 60_000,
+    env: uvEnv(paths),
+    signal: context.signal,
+    log: context.log,
+  });
+  await writeJsonAtomic(marker, { downloadedAt: new Date().toISOString() });
+  return [];
+}
+
 /** Remove runtime/<hash> dirs of older plugin versions that no live process uses, and stale staging dirs. */
 export async function collectGarbage(paths: HostPaths, log?: { write(chunk: string): unknown }): Promise<string[]> {
   const removed: string[] = [];
@@ -574,4 +599,4 @@ async function rotate(file: string): Promise<void> {
 export const DEFAULT_STEPS: readonly SetupStep[] = [systemStep, playwrightStep, uvStep, modelsStep, gcStep];
 
 /** macOS local-recording steps (no Chrome/Xvfb/PulseAudio/apt). */
-export const MACOS_STEPS: readonly SetupStep[] = [captureStep, uvStep, whisperStep, modelsStep, gcStep];
+export const MACOS_STEPS: readonly SetupStep[] = [captureStep, uvStep, whisperStep, whisperFinalStep, modelsStep, gcStep];

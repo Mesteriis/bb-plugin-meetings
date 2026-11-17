@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mergeConfigTranscriber, setTranscriberRoster, stopEscalationMs } from "../src/host/meetings.js";
+import { finalModelPatch, mergeConfigTranscriber, setTranscriberRoster, stopEscalationMs } from "../src/host/meetings.js";
 import { hostPaths } from "../src/host/paths.js";
 
 describe("stopEscalationMs", () => {
@@ -37,6 +37,22 @@ describe("mergeConfigTranscriber", () => {
       meetingId,
       transcriber: { ownerName: "Я", engine: "whisper", roster: ["a@x.io"], language: "ru" },
     });
+  });
+
+  it("writes the calendar hints next to the roster", async () => {
+    await setTranscriberRoster(hostPaths(root), meetingId, ["a@x.io"], ["Дейли", "Анна"]);
+    expect(JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf8")).transcriber).toEqual({ ownerName: "Я", roster: ["a@x.io"], hints: ["Дейли", "Анна"] });
+  });
+
+  it("points the transcriber at the exact model only when it was asked for and is downloaded", async () => {
+    const paths = hostPaths(root);
+    expect(await finalModelPatch(paths, "large-v3")).toEqual({ whisperFinalModel: "" });
+    await fs.mkdir(paths.whisperFinalModel, { recursive: true });
+    // A directory without the completion marker is an interrupted download.
+    expect(await finalModelPatch(paths, "large-v3")).toEqual({ whisperFinalModel: "" });
+    await fs.writeFile(path.join(paths.whisperFinalModel, ".complete"), "{}");
+    expect(await finalModelPatch(paths, "large-v3")).toEqual({ whisperFinalModel: paths.whisperFinalModel });
+    expect(await finalModelPatch(paths, undefined)).toEqual({ whisperFinalModel: "" });
   });
 
   it("reports a meeting without a config instead of creating one", async () => {

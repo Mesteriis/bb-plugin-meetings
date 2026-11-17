@@ -862,7 +862,7 @@ describe("user actions", () => {
     expect(hostCalls(harness, "env.check")).toHaveLength(2);
     expect(hostCalls(harness, "env.check")[0]?.input).toEqual({ chromePath: "", gigaamUrl: "" });
     await harness.behavior.callRpc("env.setup", {});
-    expect(hostCalls(harness, "env.setup")[0]?.input).toEqual({ force: false, chromePath: "", gigaamUrl: "" });
+    expect(hostCalls(harness, "env.setup")[0]?.input).toEqual({ force: false, chromePath: "", gigaamUrl: "", finalModel: false });
     expect(harness.inspection.realtimeSignals).toContainEqual({ channel: "meetings.env", payload: {} });
 
     const broken = await load();

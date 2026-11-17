@@ -32,6 +32,7 @@ import io
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -658,6 +659,153 @@ def source_split_offsets(mic, system, min_piece_s=MIN_SPLIT_PIECE_S):
     return [start for _, start, _ in runs[1:]]
 
 
+# ----------------------------------------------------------------------------- two streams
+#
+# A local recording has the microphone and the meeting app's audio as separate
+# streams. The app's audio is the remote side and nothing else, so it is
+# transcribed on its own. The microphone is the owner, plus, with loudspeakers,
+# everyone else: on a real call the remote side sat in the microphone only 4 dB
+# below the app's audio, so "who is louder" cannot tell them apart. What can is
+# whether the microphone is predictable from the app's audio: an adaptive filter
+# took 6-7 dB off the stretches where only the remote side spoke and nothing
+# (0.0 dB, 0.6 dB at the 90th percentile) off the owner's.
+
+ECHO_MAX_LAG_S = 0.5  # the app's audio reaches the microphone within this (144 ms on the real call)
+ECHO_LAG_WINDOWS = 12
+ECHO_LAG_WINDOW_S = 5.0
+ECHO_LAG_PEAK = 4.0  # correlation peak over its median that counts as an echo (13.7 on the real call)
+ECHO_LAG_MARGIN = 160  # samples of the echo path kept before the estimated lag
+ECHO_BLOCK = 4096  # adaptive filter length and block: 256 ms of echo tail
+ECHO_STEP = 0.1
+ECHO_WARMUP_S = 300.0  # the filter converges on this much before the pass that is kept
+ECHO_ERLE_DB = 1.5  # the microphone lost at least this to the filter: it carried the remote side only
+ECHO_DUPLICATE_WORDS = 0.6  # share of an owner piece's words also said by the remote side at that time
+
+
+def _floats(x, a, b):
+    """x[a:b] as float32 in [-1, 1], zeros beyond the ends; x is float or int16."""
+    out = np.zeros(max(0, b - a), dtype=np.float32)
+    lo, hi = max(a, 0), min(b, len(x))
+    if hi > lo:
+        part = np.asarray(x[lo:hi])
+        out[lo - a:hi - a] = part.astype(np.float32) / 32768.0 if part.dtype == np.int16 else part
+    return out
+
+
+def estimate_echo_lag(mic, system, max_lag_s=ECHO_MAX_LAG_S):
+    """Samples by which the system audio arrives in the microphone late (negative:
+    early), or None when the microphone does not carry it (headphones)."""
+    n = min(len(mic), len(system))
+    L = int(ECHO_LAG_WINDOW_S * SAMPLE_RATE)
+    M = int(max_lag_s * SAMPLE_RATE)
+    if n < L + 2 * M:
+        return None
+    starts = list(range(M, n - L - M, L))
+    energy = [float(np.mean(_floats(system, a, a + L) ** 2)) for a in starts]
+    loud = [a for e, a in sorted(zip(energy, starts), reverse=True)[:ECHO_LAG_WINDOWS] if e > SOURCE_SILENCE]
+    if not loud:
+        return None
+    size = 1 << int(np.ceil(np.log2(L + 2 * M)))
+    acc = np.zeros(2 * M + 1)
+    for a in loud:
+        ref = _floats(system, a, a + L)
+        got = _floats(mic, a - M, a + L + M)
+        norm = float(np.linalg.norm(ref) * np.linalg.norm(got[M:M + L]))
+        if norm <= 0:
+            continue
+        acc += np.abs(np.fft.irfft(np.fft.rfft(got, size) * np.conj(np.fft.rfft(ref, size)))[:2 * M + 1]) / norm
+    median = float(np.median(acc))
+    if median <= 0 or float(acc.max()) < ECHO_LAG_PEAK * median:
+        return None
+    return int(np.argmax(acc)) - M
+
+
+def cancel_echo(mic, system, lag):
+    """The microphone without what a linear filter predicts from the system audio
+    (frequency-domain block LMS). Never louder than the microphone itself."""
+    n = len(mic)
+    N = ECHO_BLOCK
+    shift = lag - ECHO_LAG_MARGIN
+    W = np.zeros(N + 1, dtype=np.complex64)
+    P = np.full(N + 1, 1e-6, dtype=np.float32)
+    out = np.zeros(n, dtype=np.float32)
+    warmup = min(n, int(ECHO_WARMUP_S * SAMPLE_RATE))
+    for end in (warmup, n):
+        prev = np.zeros(N, dtype=np.float32)
+        for i in range(0, end, N):
+            cur = _floats(system, i - shift, i - shift + N)
+            d = _floats(mic, i, i + N)
+            X = np.fft.rfft(np.concatenate([prev, cur]))
+            e = d - np.fft.irfft(X * W)[N:].astype(np.float32)
+            keep = min(N, n - i)
+            out[i:i + keep] = (e if float(e @ e) <= float(d @ d) else d)[:keep]
+            E = np.fft.rfft(np.concatenate([np.zeros(N, dtype=np.float32), e]))
+            P = 0.9 * P + 0.1 * (np.abs(X) ** 2).astype(np.float32)
+            g = np.fft.irfft(np.conj(X) * E / (P + 1e-6))
+            g[N:] = 0
+            W = W + ECHO_STEP * np.fft.rfft(g)
+            prev = cur
+    return out
+
+
+def owner_blocks(mic, residual, system, lag):
+    """Per ECHO_BLOCK: True where the microphone is the owner's. A block is not
+    when the system audio was playing and the filter explained the microphone."""
+    N = ECHO_BLOCK
+    blocks = (len(mic) + N - 1) // N
+    shift = lag - ECHO_LAG_MARGIN
+    em, er, es = np.zeros(blocks), np.zeros(blocks), np.zeros(blocks)
+    for b in range(blocks):
+        i = b * N
+        em[b] = float(np.mean(_floats(mic, i, i + N) ** 2))
+        er[b] = float(np.mean(_floats(residual, i, i + N) ** 2))
+        es[b] = float(np.mean(_floats(system, i - shift, i - shift + N) ** 2))
+    smooth = lambda v: np.convolve(v, np.ones(3) / 3.0, mode="same")  # noqa: E731
+    erle = 10.0 * np.log10((smooth(em) + 1e-12) / (smooth(er) + 1e-12))
+    active = es > SOURCE_SILENCE
+    active[1:] |= active[:-1].copy()  # the room rings on for a block
+    return ~(active & (erle >= ECHO_ERLE_DB))
+
+
+def owner_stream(mic, system):
+    """(the owner's audio from the microphone, the echo lag or None). Without an
+    echo the microphone is the owner as it is."""
+    lag = estimate_echo_lag(mic, system)
+    if lag is None:
+        return _floats(mic, 0, len(mic)), None
+    residual = cancel_echo(mic, system, lag)
+    keep = owner_blocks(mic, residual, system, lag)
+    residual *= np.repeat(keep, ECHO_BLOCK)[:len(residual)]
+    return residual, lag
+
+
+def words_of(text):
+    return [w for w in re.findall(r"\w+", text.lower()) if len(w) > 1]
+
+
+def echo_duplicates(segments):
+    """Ids of microphone pieces that repeat what the remote side said at the same
+    time: the echo that got through. segments: [{id, start, end, stream, text}]."""
+    remote = [s for s in segments if s.get("stream") == "system"]
+    drop = set()
+    for s in segments:
+        if s.get("stream") != "mic":
+            continue
+        mine = words_of(s["text"])
+        if not mine:
+            continue
+        heard = set()
+        covered = 0.0
+        for r in remote:
+            overlap = min(s["end"], r["end"] + 0.3) - max(s["start"], r["start"] - 0.3)
+            if overlap > 0:
+                covered += min(overlap, s["end"] - s["start"])
+                heard.update(words_of(r["text"]))
+        if covered >= 0.5 * (s["end"] - s["start"]) and sum(w in heard for w in mine) >= ECHO_DUPLICATE_WORDS * len(mine):
+            drop.add(s["id"])
+    return drop
+
+
 def ui_split_offsets(timeline, rec_start_ms, start_sample, x):
     """Sample offsets inside x where the dominant UI speaker changes (both sides >= 1.2 s)."""
     n = len(x)
@@ -892,6 +1040,20 @@ class AsrClient:
 # ----------------------------------------------------------------------------- whisper
 
 
+ASR_PROMPT_MAX = 600  # characters; Whisper keeps about 224 tokens of prompt
+
+
+def asr_prompt(glossary, hints):
+    """Whisper's initial prompt: the owner's glossary, then what the calendar knows
+    about this meeting (its title, the invitees' names), each once."""
+    parts = []
+    for part in [glossary] + list(hints or []):
+        part = " ".join(str(part).split())
+        if part and part not in parts:
+            parts.append(part)
+    return ", ".join(parts)[:ASR_PROMPT_MAX]
+
+
 class WhisperAsr:
     """Local Whisper ASR through mlx-whisper (Apple-silicon acceleration, DESIGN §15).
     Loads the model lazily on first use; serializes inference with a lock because
@@ -909,8 +1071,8 @@ class WhisperAsr:
         self.on_status = on_status
         self._impl = None
         self._transcribe_impl = transcribe_impl
-        self.model = None
         self.repo = model_path or os.environ.get("MEETINGS_WHISPER_MODEL") or self.DEFAULT_REPO
+        self.model = self.repo
         self._lock = threading.Lock()
 
     def describe(self):
@@ -921,7 +1083,6 @@ class WhisperAsr:
             return
         import mlx_whisper  # macOS-only; installed from requirements-macos.txt
         self._impl = mlx_whisper
-        self.model = self.repo
 
     def _default_transcribe(self, audio, language, initial_prompt):
         self._load()
@@ -1503,8 +1664,16 @@ class Transcriber:
         self.platform = cfg.get("platform") if isinstance(cfg.get("platform"), str) else None
         self.engine = tr.get("engine") if tr.get("engine") in ("whisper", "gigaam") else "gigaam"
         self.language = tr.get("language") if isinstance(tr.get("language"), str) else "ru"
-        self.glossary = tr.get("glossary") if isinstance(tr.get("glossary"), str) else ""
+        self.base_glossary = tr.get("glossary") if isinstance(tr.get("glossary"), str) else ""
+        self.glossary = asr_prompt(self.base_glossary, tr.get("hints") if isinstance(tr.get("hints"), list) else [])
+        self._prompt_read = time.monotonic()
+        # The transcript that stays may use a slower, more exact model than the live one.
+        final_model = tr.get("whisperFinalModel") if isinstance(tr.get("whisperFinalModel"), str) and tr.get("whisperFinalModel") else None
+        self.final_model = final_model if final_model != tr.get("whisperModel") else None
         self.owner_name = tr.get("ownerName") if isinstance(tr.get("ownerName"), str) else "Я"
+        # A local recording's final pass transcribes the two streams apart (absent = on).
+        self.separate_streams = tr.get("separateStreams") is not False
+        self.stream = None  # "system" / "mic" while the two-stream pass runs
 
         self.stop = threading.Event()
         self.lock = threading.RLock()
@@ -1528,7 +1697,9 @@ class Transcriber:
         self.timeline = SpeakerTimeline(self.paths["speakers"], self.lag_ms)
         discovery = os.path.join(self.host_data, "gigaam.json") if self.host_data else None
         if self.engine == "whisper":
-            self.asr = WhisperAsr(self.language, self.glossary, self.stop, self._asr_status, transcribe_impl=whisper_impl, model_path=tr.get("whisperModel"))
+            self._whisper_impl = whisper_impl
+            model = self.final_model if self.mode == "offline" and self.final_model else tr.get("whisperModel")
+            self.asr = WhisperAsr(self.language, self.glossary, self.stop, self._asr_status, transcribe_impl=whisper_impl, model_path=model)
         else:
             self.asr = AsrClient(primary_url, discovery, self.stop, self._asr_status)
 
@@ -1811,6 +1982,10 @@ class Transcriber:
             log("nothing was recorded: no transcript")
             self._discard_state()
             return
+        if self.platform == "local" and self._streams_usable():
+            # What was shown during the call came from the mix; the transcript that stays
+            # is made from the two streams apart.
+            self._run_two_streams()
         self._finalize()
 
     def _recorded_nothing(self):
@@ -1874,6 +2049,11 @@ class Transcriber:
         bot = self._read_bot()
         if self.platform == "local":
             self._restore_streams()
+            if self._streams_usable():
+                self.timeline.load_all()
+                self._run_two_streams()
+                self._finalize()
+                return
         # The lossless recording (kept by keepRawAudio, or left by a live run that
         # never finalized) beats decoding the Opus archive, which never replaces it.
         if self._raw_pcm_complete(bot):
@@ -1897,6 +2077,77 @@ class Transcriber:
             pass
         self._consume(pcm, vad, READ_MAX_SAMPLES, final=True)
         self._finalize()
+
+    def _refresh_prompt(self, force=False):
+        """The calendar answers after the transcriber has started: pick its hints up."""
+        if not isinstance(self.asr, WhisperAsr) or (not force and time.monotonic() - self._prompt_read < 30.0):
+            return
+        self._prompt_read = time.monotonic()
+        cfg = read_json(self.paths["config"]) or {}
+        tr = cfg.get("transcriber") if isinstance(cfg.get("transcriber"), dict) else {}
+        self.asr.glossary = asr_prompt(self.base_glossary, tr.get("hints") if isinstance(tr.get("hints"), list) else [])
+
+    def _streams_usable(self):
+        """Both streams of a local recording are on disk, cover the recording and carry sound."""
+        if not self.separate_streams:
+            return False
+        sizes = []
+        for name in ("mic.pcm", "system.pcm"):
+            path = os.path.join(self.dir, name)
+            if not os.path.isfile(path) or os.path.getsize(path) < 2 * SAMPLE_RATE:
+                return False
+            sizes.append(os.path.getsize(path) // 2)
+        if abs(sizes[0] - sizes[1]) > SAMPLE_RATE:
+            return False
+        for name, count in zip(("mic.pcm", "system.pcm"), sizes):
+            data = np.memmap(os.path.join(self.dir, name), dtype=np.int16, mode="r")
+            step = max(1, count // 200000)
+            if int(np.abs(data[::step].astype(np.int32)).max()) < 33:  # about -60 dBFS: the stream is silence
+                return False
+        return True
+
+    def _run_two_streams(self):
+        """Transcribe the system audio (the remote side) and the microphone without
+        its echo (the owner) apart, replacing whatever the mixed pass produced."""
+        started = time.monotonic()
+        if self.final_model and isinstance(self.asr, WhisperAsr) and self.asr.repo != self.final_model:
+            self.asr = WhisperAsr(self.language, self.glossary, self.stop, self._asr_status,
+                                  transcribe_impl=self._whisper_impl, model_path=self.final_model)
+            log(f"final pass with {self.asr.describe()}")
+        self._refresh_prompt(force=True)
+        self.set_phase("live", "separating the microphone from the meeting audio")
+        self.save(force=True)
+        mic = np.memmap(os.path.join(self.dir, "mic.pcm"), dtype=np.int16, mode="r")
+        system = np.memmap(os.path.join(self.dir, "system.pcm"), dtype=np.int16, mode="r")
+        owner, lag = owner_stream(mic, system)
+        owner_path = os.path.join(self.dir, "owner.pcm")
+        (np.clip(owner, -1.0, 1.0) * 32767.0).astype(np.int16).tofile(owner_path)
+        del owner, mic, system
+        log("two streams: " + ("no echo in the microphone" if lag is None else f"echo of the meeting audio removed (lag {lag * 1000 // SAMPLE_RATE} ms)")
+            + f" in {time.monotonic() - started:.1f}s")
+        with self.lock:
+            self.next_id = 0
+        for key in ("segments", "embeddings"):
+            remove_quietly(self.paths[key])
+        try:
+            for stream, path in (("system", os.path.join(self.dir, "system.pcm")), ("mic", owner_path)):
+                self.stream = stream
+                self.pending = np.zeros(0, dtype=np.float32)
+                pcm = PcmSource(path, 0)
+                self.audio_samples = max(self.audio_samples, (pcm.size() or 0) // 2)
+                vad = self.make_vad(0)
+                self.set_phase("live", "transcribing the meeting audio" if stream == "system" else "transcribing the microphone")
+                while self._consume(pcm, vad, READ_MAX_SAMPLES):
+                    pass
+                self._consume(pcm, vad, READ_MAX_SAMPLES, final=True)
+        finally:
+            self.stream = None
+            remove_quietly(owner_path)
+        segments = load_segments(self.paths["segments"], self.next_id)
+        drop = echo_duplicates(segments)
+        if drop:
+            write_text_atomic(self.paths["segments"], "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in segments if s["id"] not in drop))
+            log(f"two streams: {len(drop)} microphone piece(s) repeated the meeting audio and were dropped")
 
     def _decode_ogg(self):
         """audio.ogg -> audio.decoded.pcm (16 kHz mono s16le), deleted at finalize.
@@ -1957,7 +2208,7 @@ class Transcriber:
             for start, x in vad.flush():
                 self._process_speech(start, x)
             self.pending = np.zeros(0, dtype=np.float32)
-        if final or not vad.in_speech:
+        if (final or not vad.in_speech) and self.stream is None:
             margin = 0 if final else int(RESUME_SILENCE_MARGIN_S * SAMPLE_RATE)
             with self.lock:
                 self.checkpoint = max(self.checkpoint, self.fed - margin)
@@ -1969,7 +2220,9 @@ class Transcriber:
         if self.mode == "live" and self.platform != "local":
             self.timeline.poll()
         offsets = []
-        if self.platform == "local":
+        if self.stream is not None:
+            pass  # one side only: nothing to split by source
+        elif self.platform == "local":
             offsets = source_split_offsets(self._pcm_slice("mic.pcm", start, len(x)),
                                            self._pcm_slice("system.pcm", start, len(x)))
         elif self.effective_diarization != "acoustic":
@@ -1987,6 +2240,8 @@ class Transcriber:
         """Look for voice changes unless the UI confidently names a single speaker."""
         if self.embedder is None or length < 2 * MIN_SPLIT_PIECE_S * SAMPLE_RATE:
             return False
+        if self.stream is not None:
+            return self.stream == "system"
         if self.platform == "local":
             return self._local_owner_for(start / SAMPLE_RATE, (start + length) / SAMPLE_RATE) is None
         if self.effective_diarization == "acoustic":
@@ -1996,7 +2251,9 @@ class Transcriber:
         return share < UI_CONFIDENT_COVERAGE
 
     def _emit(self, start, x):
-        futures = self.embedder.submit(x) if self.embedder else None
+        self._refresh_prompt()
+        # The owner needs no voice: the microphone stream says who it is.
+        futures = self.embedder.submit(x) if self.embedder and self.stream != "mic" else None
         text = self.asr.transcribe(x)
         emb = Embedder.collect(futures) if futures else None
         end = start + len(x)
@@ -2005,6 +2262,8 @@ class Transcriber:
             key, label, source = self._live_speaker(a, b)
             seg = {"id": self.next_id, "start": a, "end": b, "speakerKey": key, "speaker": label,
                    "source": source, "text": text}
+            if self.stream is not None:
+                seg["stream"] = self.stream
             append_jsonl(self.paths["segments"], seg)
             if emb is not None:
                 append_jsonl(self.paths["embeddings"], {"id": self.next_id, "emb": encode_embedding(emb)})
@@ -2012,13 +2271,16 @@ class Transcriber:
             log(f"#{self.next_id} [{a:.2f}-{b:.2f}] {label}: {short}")
             with self.lock:
                 self.next_id += 1
-                self.checkpoint = max(self.checkpoint, end)
-        else:
+        if self.stream is None:
             with self.lock:
                 self.checkpoint = max(self.checkpoint, end)
         self.save(force=True)
 
     def _live_speaker(self, a, b):
+        if self.stream == "mic":
+            return "ui:" + self.owner_name, self.owner_name, "ui"
+        if self.stream == "system":
+            return UNKNOWN_KEY, UNKNOWN_LABEL, "none"
         if self.platform == "local":
             owner = self._local_owner_for(a, b)
             if owner is not None:
@@ -2038,7 +2300,10 @@ class Transcriber:
         started = time.monotonic()
         self._read_bot()
         segments = load_segments(self.paths["segments"], self.next_id)
-        if self.platform == "local":
+        by_stream = self.platform == "local" and bool(segments) and all(s.get("stream") in ("mic", "system") for s in segments)
+        if by_stream:
+            coverages = [{self.owner_name: 1.0} if s["stream"] == "mic" else {} for s in segments]
+        elif self.platform == "local":
             coverages = []
             for s in segments:
                 owner = self._local_owner_for(s["start"], s["end"])
@@ -2071,7 +2336,7 @@ class Transcriber:
                         log(f"recognized voices: {', '.join(sorted(voice_names.values()))}")
             elif mode == "acoustic":
                 log("no speaker embeddings: all speakers unknown")
-        if self.platform == "local" and mode != "ui":
+        if self.platform == "local" and mode != "ui" and not by_stream:
             # The voice decides who the owner is, not single loud pieces (owner_coverage).
             mine = owner_coverage([bool(c) for c in coverages], own_clusters, [s["end"] - s["start"] for s in segments])
             coverages = [{self.owner_name: 1.0} if flag else {} for flag in mine]

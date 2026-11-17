@@ -128,7 +128,8 @@ export class FakeRuntime {
   localStartCalls: Array<{ meetingId: string; appKey: string; engine: string; glossary: string; ownerName: string; inputDevice: string }> = [];
   localPollError: string | null = null;
   voiceLearnCalls: Array<{ meetingId: string; speakerKey: string; name: string; roster?: string[] }> = [];
-  rosterCalls: Array<{ meetingId: string; roster: string[] }> = [];
+  rosterCalls: Array<{ meetingId: string; roster: string[]; hints?: string[] }> = [];
+  deleteCalls: string[] = [];
   voiceRetractCalls: Array<{ meetingId: string; speakerKey: string }> = [];
   /** Voice methods in the order the host received them. */
   voiceOrder: string[] = [];
@@ -326,7 +327,7 @@ export class FakeRuntime {
         this.voiceRetractCalls.push({ meetingId: args.meetingId as string, speakerKey: args.speakerKey as string });
         return { retracted: true };
       case "local.setRoster":
-        this.rosterCalls.push({ meetingId: args.meetingId as string, roster: args.roster as string[] });
+        this.rosterCalls.push({ meetingId: args.meetingId as string, roster: args.roster as string[], hints: args.hints as string[] });
         return { ok: true };
       case "voices.list":
         return { voices: this.voices };

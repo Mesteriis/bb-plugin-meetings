@@ -1318,6 +1318,62 @@ class LocalRecordingTests(unittest.TestCase):
         self.assertNotEqual(labels[1], "Я")
         self.assertEqual(labels[2], "Я")
 
+    def test_offline_local_with_loudspeakers_keeps_the_remote_side_out_of_the_owner(self):
+        """The microphone hears the remote side as loud as the owner (loudspeakers). The two-stream
+        pass gives the remote side to the system stream only and the owner two pieces, not three."""
+        d = self._synthetic_local_meeting()
+        sr = tr.SAMPLE_RATE
+        rng = np.random.default_rng(5)
+        n = 30 * sr
+        remote = np.zeros(n, dtype=np.float32)
+        remote[10 * sr:20 * sr] = (0.3 * rng.normal(size=10 * sr)).astype(np.float32)
+        owner = np.zeros(n, dtype=np.float32)
+        t = np.arange(3 * sr) / sr
+        for a in (3, 24):
+            owner[a * sr:(a + 3) * sr] = (0.3 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+        mic = owner.copy()
+        mic[1600:] += 0.8 * remote[:n - 1600]
+        for name, x in (("mic.pcm", mic), ("system.pcm", remote), ("audio.pcm", np.clip(mic + remote, -1, 1))):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write((np.clip(x, -1, 1) * 32767.0).astype(np.int16).tobytes())
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        self.assertEqual(tr.Transcriber(self._local_args(d, "offline"), whisper_impl=impl).run(), 0)
+        segments = read_json(os.path.join(d, "transcript.json"))["segments"]
+        mine = [(round(s["start"]), round(s["end"])) for s in segments if s["speaker"] == "Я"]
+        self.assertEqual(mine, [(3, 6), (24, 27)])
+        others = [s for s in segments if s["speaker"] != "Я"]
+        self.assertGreaterEqual(len(others), 1)
+        self.assertTrue(all(9.5 <= s["start"] and s["end"] <= 20.5 for s in others), others)
+        self.assertFalse(os.path.exists(os.path.join(d, "owner.pcm")))
+
+    def test_asr_prompt_joins_the_glossary_with_calendar_hints(self):
+        self.assertEqual(tr.asr_prompt("Kubernetes, деплой", ["Анна Смирнова", "Планёрка Matcher", "Анна Смирнова", " "]),
+                         "Kubernetes, деплой, Анна Смирнова, Планёрка Matcher")
+        self.assertEqual(tr.asr_prompt("", []), "")
+        self.assertEqual(len(tr.asr_prompt("я" * 900, ["Анна"])), 600)
+
+    def test_offline_local_uses_calendar_hints_and_the_final_model(self):
+        """The final pass prompts Whisper with the glossary plus the hints written after the
+        calendar answered, and runs the model configured for the final transcript."""
+        d = self._synthetic_local_meeting()
+        cfg = read_json(os.path.join(d, "config.json"))
+        cfg["transcriber"].update(glossary="Kubernetes", hints=["Анна Смирнова"], whisperModel="/models/turbo", whisperFinalModel="/models/large")
+        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+        prompts = []
+
+        def impl(audio, language, initial_prompt):
+            prompts.append(initial_prompt)
+            return "слово"
+
+        t = tr.Transcriber(self._local_args(d, "offline"), whisper_impl=impl)
+        self.assertEqual(t.run(), 0)
+        self.assertEqual(set(prompts), {"Kubernetes, Анна Смирнова"})
+        self.assertEqual(read_json(os.path.join(d, "transcript.json"))["asr"]["model"], "/models/large")
+
     def test_source_split_offsets_owner_then_remote(self):
         """One continuous stretch: the owner in 0-2 s, the remote side in 2-4 s -> one cut at 2 s."""
         sr = tr.SAMPLE_RATE
@@ -1432,6 +1488,57 @@ class LocalRecordingTests(unittest.TestCase):
         # A piece too short for an embedding follows the voice before it, but is not itself a voice match.
         decided = tr.decide_speakers(segments[:2], [{}, {}], [0, None], "ui+acoustic", {0: "Анна"})
         self.assertEqual(decided, [("voice:Анна", "Анна", "voice"), ("voice:Анна", "Анна", "mixed")])
+
+    def _echo_case(self, echo=0.6, lag=1600, seconds=30):
+        """System: speech-like noise bursts. Microphone: the owner's tone at 12-15 s plus the
+        system audio delayed by lag and scaled by echo."""
+        sr = tr.SAMPLE_RATE
+        rng = np.random.default_rng(3)
+        n = seconds * sr
+        system = np.zeros(n, dtype=np.float32)
+        for a, b in ((2, 10), (16, 28)):
+            system[a * sr:b * sr] = (0.2 * rng.normal(size=(b - a) * sr)).astype(np.float32)
+        owner = np.zeros(n, dtype=np.float32)
+        t = np.arange(3 * sr) / sr
+        owner[12 * sr:15 * sr] = (0.2 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+        mic = owner.copy()
+        mic[lag:] += echo * system[:n - lag]
+        return mic, system, owner
+
+    def test_estimate_echo_lag_finds_the_delay_and_no_echo(self):
+        mic, system, owner = self._echo_case(lag=1600)
+        self.assertEqual(tr.estimate_echo_lag(mic, system), 1600)
+        self.assertIsNone(tr.estimate_echo_lag(owner, system))
+
+    def test_cancel_echo_removes_the_remote_side_and_keeps_the_owner(self):
+        sr = tr.SAMPLE_RATE
+        mic, system, owner = self._echo_case()
+        residual = tr.cancel_echo(mic, system, 1600)
+        db = lambda x: 10 * np.log10(float(np.mean(x * x)) + 1e-12)  # noqa: E731
+        echo_only = slice(18 * sr, 27 * sr)
+        self.assertLess(db(residual[echo_only]), db(mic[echo_only]) - 10)
+        mine = slice(12 * sr, 15 * sr)
+        self.assertLess(abs(db(residual[mine]) - db(owner[mine])), 1.0)
+
+    def test_owner_stream_mutes_the_echo_and_passes_a_clean_microphone_through(self):
+        sr = tr.SAMPLE_RATE
+        mic, system, owner = self._echo_case()
+        mine, lag = tr.owner_stream(mic, system)
+        self.assertEqual(lag, 1600)
+        self.assertEqual(float(np.abs(mine[18 * sr:27 * sr]).max()), 0.0)
+        self.assertGreater(float(np.mean(mine[12 * sr + 8192:15 * sr - 8192] ** 2)), 0.015)  # the tone's 0.02, mostly
+        clean, lag = tr.owner_stream(owner, system)
+        self.assertIsNone(lag)
+        self.assertTrue(np.array_equal(clean, owner))
+
+    def test_echo_duplicates_drops_a_microphone_piece_that_repeats_the_remote_side(self):
+        segments = [
+            {"id": 0, "start": 10.0, "end": 14.0, "stream": "system", "text": "давайте посмотрим на график продаж"},
+            {"id": 1, "start": 10.2, "end": 14.1, "stream": "mic", "text": "Давайте посмотрим на график"},
+            {"id": 2, "start": 11.0, "end": 13.0, "stream": "mic", "text": "подожди, у меня вопрос"},
+            {"id": 3, "start": 40.0, "end": 42.0, "stream": "mic", "text": "давайте посмотрим на график продаж"},
+        ]
+        self.assertEqual(tr.echo_duplicates(segments), {1})
 
     def test_cluster_anchored_needs_long_pieces(self):
         X = np.stack([tr.unit(np.eye(4)[i % 4]) for i in range(6)]).astype(np.float32)

@@ -513,8 +513,14 @@ async function stopTranscriber(dir: string, pid: number): Promise<void> {
 }
 
 /** Record the meeting's calendar roster for the transcriber; false when the meeting has no config yet. */
-export async function setTranscriberRoster(paths: HostPaths, meetingId: string, roster: readonly string[]): Promise<boolean> {
-  return mergeConfigTranscriber(meetingDir(paths, meetingId), { roster: [...roster] });
+export async function setTranscriberRoster(paths: HostPaths, meetingId: string, roster: readonly string[], hints: readonly string[] = []): Promise<boolean> {
+  return mergeConfigTranscriber(meetingDir(paths, meetingId), { roster: [...roster], ...(hints.length > 0 ? { hints: [...hints] } : {}) });
+}
+
+/** Where the exact model is, when the owner asked for it and it is fully downloaded; "" otherwise. */
+export async function finalModelPatch(paths: HostPaths, finalModel: unknown): Promise<{ whisperFinalModel: string }> {
+  const ready = finalModel === "large-v3" && (await isFile(path.join(paths.whisperFinalModel, ".complete")));
+  return { whisperFinalModel: ready ? paths.whisperFinalModel : "" };
 }
 
 /**
@@ -535,8 +541,8 @@ export function mergeConfigTranscriber(dir: string, patch: Record<string, unknow
   });
 }
 
-async function updateConfigTranscriber(dir: string, transcriber: TranscriberConfig): Promise<void> {
-  if (!(await mergeConfigTranscriber(dir, transcriber))) {
+async function updateConfigTranscriber(paths: HostPaths, dir: string, transcriber: TranscriberConfig): Promise<void> {
+  if (!(await mergeConfigTranscriber(dir, { ...transcriber, ...(await finalModelPatch(paths, transcriber.finalModel)) }))) {
     throw new Error(`В каталоге встречи нет корректного config.json: ${dir}`);
   }
 }
@@ -581,7 +587,7 @@ export async function ensureTranscriber(paths: HostPaths, input: EnsureTranscrib
     const noLiveInput = !botAlive && hasArchive && !(await isFile(file(dir, F.pcm)));
     const mode = last?.mode === "offline" || noLiveInput ? "offline" : "live";
     await requireTranscriberRuntime(paths);
-    await updateConfigTranscriber(dir, input.transcriber);
+    await updateConfigTranscriber(paths, dir, input.transcriber);
     if (mode === "offline") await clearTranscriptionOutputs(dir);
     const pid = await spawnTranscriber(paths, dir, input.transcriber, mode);
     await updatePids(file(dir, F.pids), { transcriber: { pid, startedAt: Date.now(), mode, restarts } });
@@ -593,7 +599,7 @@ export async function ensureTranscriber(paths: HostPaths, input: EnsureTranscrib
   // Before anything is stopped or deleted: a re-transcription that cannot start must not cost the old transcript.
   await requireTranscriberRuntime(paths);
   if (alive !== null) await stopTranscriber(dir, alive);
-  await updateConfigTranscriber(dir, input.transcriber);
+  await updateConfigTranscriber(paths, dir, input.transcriber);
   await clearTranscriptionOutputs(dir);
   const pid = await spawnTranscriber(paths, dir, input.transcriber, "offline");
   await updatePids(file(dir, F.pids), { transcriber: { pid, startedAt: Date.now(), mode: "offline", restarts: 0 } });
