@@ -836,6 +836,8 @@ export class MeetingsService {
     const mapped = mapRuntime(snapshot, {
       status: row.status,
       source: row.source,
+      startLiveTranscriber:
+        row.source === "local" && row.options.autoTranscribe !== false && (await this.settings.get()).liveTranscription,
       startedAt: row.startedAt,
       transcriberFailures: failures,
       transcriberProgressAt: options.transcriberMarkAt ?? now,

@@ -23,6 +23,12 @@ export interface StatusContext {
   readonly startedAt: number | null;
   /** Failed transcriber runs so far (see MAX_TRANSCRIBER_FAILURES). */
   readonly transcriberFailures: number;
+  /**
+   * Start a live transcriber when the recording has none yet. Bot meetings get
+   * theirs from the host at start; a local recording starts with the capture
+   * helper alone, so the server asks for it here.
+   */
+  readonly startLiveTranscriber?: boolean;
   /** When the server last saw the transcriber change (start, progress, exit); server clock. */
   readonly transcriberProgressAt: number;
   /**
@@ -286,12 +292,12 @@ export function mapRuntime(snapshot: RuntimeSnapshot, ctx: StatusContext): Mappe
       return out;
     }
     out.activeSpeakers = bot.activeSpeakers;
-    // A live transcriber that died mid-meeting is restarted (it resumes from its checkpoint).
+    // A live transcriber that died mid-meeting is restarted (it resumes from its checkpoint);
+    // one that never started is started when the caller wants live transcription.
     out.needsTranscriber =
       snapshot.botAlive &&
-      transcriber !== null &&
       !snapshot.transcriberAlive &&
-      transcriber.phase !== "done" &&
+      (transcriber !== null ? transcriber.phase !== "done" : ctx.startLiveTranscriber === true) &&
       ctx.transcriberFailures < MAX_TRANSCRIBER_FAILURES;
     switch (bot.phase) {
       case "starting":

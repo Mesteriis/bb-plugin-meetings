@@ -164,6 +164,18 @@ describe("local recording auto-record", () => {
     }
   });
 
+  it("starts a live transcriber for a local recording on the next reconcile, unless live transcription is off", async () => {
+    for (const [live, expected] of [[true, [{ mode: "live" }]], [false, []]] as const) {
+      const loaded = await load({ settings: { ...macSettings(), liveTranscription: live }, now: () => T0 });
+      loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+      loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+      await loaded.service.pollLocalDetection();
+      loaded.fake.localPollResult = { supported: true, detected: [], started: [], ended: [], error: null };
+      await loaded.service.tick();
+      expect(loaded.fake.ensureCalls.map((call) => ({ mode: call.mode }))).toEqual(expected);
+    }
+  });
+
   it("keeps the local speech settings through start and retranscribe", async () => {
     const loaded = await load({ settings: { ...macSettings(), localGlossary: "термин", localOwnerName: "Я", localLanguage: "ru" }, now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
