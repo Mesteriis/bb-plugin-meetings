@@ -114,6 +114,8 @@ export const MIGRATIONS: readonly string[] = [
   // one-time "the bot cannot hear the meeting" message to the requesting thread.
   `ALTER TABLE meetings ADD COLUMN warning TEXT`,
   `ALTER TABLE meetings ADD COLUMN warning_notified_at INTEGER`,
+  // Text fixes (DESIGN §17): what the recogniser produced, kept while `text` holds a corrected reading.
+  `ALTER TABLE segments ADD COLUMN original_text TEXT`,
 ];
 
 export function openDatabase(bb: BbPluginApi): Db {
@@ -689,7 +691,8 @@ export class Repository {
   upsertSegments(meetingId: string, segments: readonly Segment[], final: boolean): void {
     const find = this.db.prepare("SELECT rowid FROM segments WHERE meeting_id = ? AND id = ?");
     const update = this.db.prepare(
-      `UPDATE segments SET start = ?, "end" = ?, speaker_key = ?, speaker = ?, source = ?, text = ?, final = ? WHERE rowid = ?`,
+      // A newly recognised text replaces a corrected one together with what it corrected.
+      `UPDATE segments SET start = ?, "end" = ?, speaker_key = ?, speaker = ?, source = ?, text = ?, final = ?, original_text = NULL WHERE rowid = ?`,
     );
     const insert = this.db.prepare(
       `INSERT INTO segments (meeting_id, id, start, "end", speaker_key, speaker, source, text, final)
@@ -712,6 +715,52 @@ export class Repository {
         ftsInsert.run(rowid, ftsText(s.text));
       }
     })();
+  }
+
+  /**
+   * Replace the text of some segments, keeping what the recogniser produced the
+   * first time a segment is changed. Returns how many segments changed.
+   */
+  correctSegments(meetingId: string, texts: ReadonlyMap<number, string>): number {
+    const find = this.db.prepare("SELECT rowid, text FROM segments WHERE meeting_id = ? AND id = ?");
+    const update = this.db.prepare("UPDATE segments SET text = ?, original_text = COALESCE(original_text, ?) WHERE rowid = ?");
+    const ftsDelete = this.db.prepare("DELETE FROM segments_fts WHERE rowid = ?");
+    const ftsInsert = this.db.prepare("INSERT INTO segments_fts (rowid, text) VALUES (?, ?)");
+    let changed = 0;
+    this.db.transaction(() => {
+      for (const [id, text] of texts) {
+        const existing = find.get(meetingId, id) as { rowid: number; text: string } | undefined;
+        if (existing === undefined || existing.text === text) continue;
+        update.run(text, existing.text, existing.rowid);
+        ftsDelete.run(existing.rowid);
+        ftsInsert.run(existing.rowid, ftsText(text));
+        changed += 1;
+      }
+    })();
+    return changed;
+  }
+
+  /** Put the recognised text back in every corrected segment of a meeting. Returns how many. */
+  revertCorrections(meetingId: string): number {
+    const rows = this.db.prepare("SELECT rowid, original_text FROM segments WHERE meeting_id = ? AND original_text IS NOT NULL").all(meetingId) as {
+      rowid: number;
+      original_text: string;
+    }[];
+    const update = this.db.prepare("UPDATE segments SET text = ?, original_text = NULL WHERE rowid = ?");
+    const ftsDelete = this.db.prepare("DELETE FROM segments_fts WHERE rowid = ?");
+    const ftsInsert = this.db.prepare("INSERT INTO segments_fts (rowid, text) VALUES (?, ?)");
+    this.db.transaction(() => {
+      for (const row of rows) {
+        update.run(row.original_text, row.rowid);
+        ftsDelete.run(row.rowid);
+        ftsInsert.run(row.rowid, ftsText(row.original_text));
+      }
+    })();
+    return rows.length;
+  }
+
+  correctedSegments(meetingId: string): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM segments WHERE meeting_id = ? AND original_text IS NOT NULL").get(meetingId) as { n: number }).n;
   }
 
   /** Drop all segments of a meeting and insert these. */

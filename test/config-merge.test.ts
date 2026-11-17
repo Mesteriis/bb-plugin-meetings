@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { finalModelPatch, mergeConfigTranscriber, setTranscriberRoster, stopEscalationMs } from "../src/host/meetings.js";
+import { dropAudio, finalModelPatch, mergeConfigTranscriber, setTranscriberRoster, stopEscalationMs } from "../src/host/meetings.js";
 import { hostPaths } from "../src/host/paths.js";
 
 describe("stopEscalationMs", () => {
@@ -53,6 +53,13 @@ describe("mergeConfigTranscriber", () => {
     await fs.writeFile(path.join(paths.whisperFinalModel, ".complete"), "{}");
     expect(await finalModelPatch(paths, "large-v3")).toEqual({ whisperFinalModel: paths.whisperFinalModel });
     expect(await finalModelPatch(paths, undefined)).toEqual({ whisperFinalModel: "" });
+  });
+
+  it("removes a meeting's audio files and nothing else", async () => {
+    for (const name of ["audio.ogg", "mic.ogg", "system.ogg", "audio.pcm", "transcript.json"]) await fs.writeFile(path.join(dir, name), "x");
+    expect(await dropAudio(hostPaths(root), meetingId)).toBe(4);
+    expect((await fs.readdir(dir)).sort()).toEqual(["config.json", "transcript.json"]);
+    expect(await dropAudio(hostPaths(root), "mtg_missing00001")).toBe(0);
   });
 
   it("reports a meeting without a config instead of creating one", async () => {

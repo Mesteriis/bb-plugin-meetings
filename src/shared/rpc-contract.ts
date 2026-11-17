@@ -484,6 +484,15 @@ export const rpcContract = defineRpcContract({
     input: z.object({ id: meetingIdSchema }).strict(),
     output: z.object({ prompt: z.string() }).strict(),
   },
+  "meetings.textFixPrompt": {
+    input: z.object({ id: meetingIdSchema }).strict(),
+    /** corrected: segments whose text was already fixed and can be put back. */
+    output: z.object({ prompt: z.string(), corrected: z.number() }).strict(),
+  },
+  "meetings.revertTextFixes": {
+    input: z.object({ id: meetingIdSchema }).strict(),
+    output: z.object({ reverted: z.number() }).strict(),
+  },
   "meetings.voiceSuggestions": {
     input: z.object({ id: meetingIdSchema }).strict(),
     output: z

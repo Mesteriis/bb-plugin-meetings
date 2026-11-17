@@ -33,7 +33,7 @@ import {
 } from "./src/host/meetings.js";
 import { lookupCalendarEvent } from "./src/host/local-calendar.js";
 import { forgetVoice, learnVoice, listVoices, retractVoice, suggestVoices } from "./src/host/voices.js";
-import { setTranscriberRoster } from "./src/host/meetings.js";
+import { dropAudio, setTranscriberRoster } from "./src/host/meetings.js";
 import { localPoll, startLocalMeeting } from "./src/host/local-recording.js";
 import { hostPaths, type HostPaths } from "./src/host/paths.js";
 import { cancelSetups, startSetup } from "./src/host/setup.js";
@@ -135,6 +135,10 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
 
   "meeting.delete": async ({ meetingId }, context) => ({
     deleted: await deleteMeeting(pathsFor(context.experimental_paths.dataDir), meetingId),
+  }),
+
+  "meeting.dropAudio": async ({ meetingId }, context) => ({
+    dropped: await dropAudio(pathsFor(context.experimental_paths.dataDir), meetingId),
   }),
 
   "runtime.list": async (_input, context) => ({

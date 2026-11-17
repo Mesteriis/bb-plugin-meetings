@@ -133,6 +133,7 @@ export class FakeRuntime {
   voiceRetractCalls: Array<{ meetingId: string; speakerKey: string }> = [];
   /** Voice methods in the order the host received them. */
   voiceOrder: string[] = [];
+  dropAudioCalls: string[] = [];
   suggestCalls: Array<{ meetingId: string; speakerKeys: string[]; taken: string[] }> = [];
   suggestions: Array<{ speakerKey: string; name: string; similarity: number }> = [];
   voices: Array<{ name: string; seconds: number; meetings: number; updatedAt: number }> = [];
@@ -331,6 +332,9 @@ export class FakeRuntime {
       case "local.setRoster":
         this.rosterCalls.push({ meetingId: args.meetingId as string, roster: args.roster as string[], hints: args.hints as string[] });
         return { ok: true };
+      case "meeting.dropAudio":
+        this.dropAudioCalls.push(args.meetingId as string);
+        return { dropped: 3 };
       case "voices.suggest":
         this.suggestCalls.push({ meetingId: args.meetingId as string, speakerKeys: args.speakerKeys as string[], taken: args.taken as string[] });
         return { suggestions: this.suggestions };
