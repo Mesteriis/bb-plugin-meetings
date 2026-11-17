@@ -1218,11 +1218,11 @@ class VoiceRecognitionTests(unittest.TestCase):
         self.assertFalse(tr.voice_expected(set(), team))
 
     def test_match_voices_eases_the_match_for_a_voice_the_calendar_expects(self):
-        # 0.55 similar: not enough for a stranger, enough for someone from this meeting's roster.
+        # 0.62 similar: not enough for a stranger, enough for someone from this meeting's roster.
         other = tr.unit(self.rng.normal(size=32))
         other = tr.unit(other - (other @ self.anna) * self.anna)
-        centroid = tr.unit(0.55 * self.anna + (1 - 0.55 ** 2) ** 0.5 * other)
-        self.assertAlmostEqual(float(centroid @ self.anna), 0.55, places=4)
+        centroid = tr.unit(0.62 * self.anna + (1 - 0.62 ** 2) ** 0.5 * other)
+        self.assertAlmostEqual(float(centroid @ self.anna), 0.62, places=4)
         team = ["a@x.io", "b@x.io", "c@x.io"]
         stranger = [("Анна", self.anna, frozenset({"q@y.io"}))]
         teammate = [("Анна", self.anna, frozenset({"a@x.io", "b@x.io"}))]
@@ -1230,7 +1230,7 @@ class VoiceRecognitionTests(unittest.TestCase):
         self.assertEqual(tr.match_voices({0: (centroid, 60.0)}, teammate, team), {0: "Анна"})
         self.assertEqual(tr.match_voices({0: (centroid, 60.0)}, teammate, []), {})
         # Even an expected voice is refused below its own threshold.
-        weak = tr.unit(0.45 * self.anna + (1 - 0.45 ** 2) ** 0.5 * other)
+        weak = tr.unit(0.57 * self.anna + (1 - 0.57 ** 2) ** 0.5 * other)
         self.assertEqual(tr.match_voices({0: (weak, 60.0)}, teammate, team), {})
 
     def test_match_voices_gives_a_voice_to_one_cluster_only(self):
