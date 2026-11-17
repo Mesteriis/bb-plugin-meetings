@@ -51,7 +51,7 @@ describe("mergeVoice", () => {
   it("starts a voice from its first sample", () => {
     expect(mergeVoice(null, "Анна", { meeting: "m1", vector: vec(1, 0), seconds: 40 }, 1000)).toEqual({
       name: "Анна", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, meetings: 1, updatedAt: 1000, roster: [],
-      samples: [{ meeting: "m1", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, at: 1000 }],
+      samples: [{ meeting: "m1", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, at: 1000, roster: [] }],
     });
   });
 
@@ -160,6 +160,36 @@ describe("learnVoice, listVoices, forgetVoice", () => {
     await fs.writeFile(path.join(paths.meetings, meetingId, "transcript.json"), JSON.stringify({ segments: [{ id: 0, start: 0, end: 12, speakerKey: "unknown" }] }));
     expect(await learnVoice(paths, { meetingId, speakerKey: "unknown", name: "Анна" }, 1)).toEqual({ learned: false, reason: "no_voice", seconds: 0 });
     expect(await listVoices(paths)).toEqual([]);
+  });
+
+  it("lets a forget that follows a learn of the same voice win, however slow the learn is", async () => {
+    const paths = hostPaths(root);
+    await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 1);
+    const learning = learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 2);
+    expect(await forgetVoice(paths, "Анна")).toBe(true);
+    await learning;
+    expect(await listVoices(paths)).toEqual([]);
+  });
+
+  it("takes the meeting's invitees back together with its sample", async () => {
+    const paths = hostPaths(root);
+    const other = "mtg_voices000002";
+    const dir = path.join(paths.meetings, other);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "transcript.json"), JSON.stringify({ segments: [{ id: 0, start: 0, end: 20, speakerKey: "spk:1" }] }));
+    await fs.writeFile(path.join(dir, "embeddings.jsonl"), JSON.stringify({ id: 0, emb: encodeEmbedding(vec(0, 1)) }));
+    const rosters = async () =>
+      Object.fromEntries(JSON.parse(await fs.readFile(path.join(root, "voices.json"), "utf8")).voices.map((v: { name: string; roster: string[] }) => [v.name, v.roster]));
+    await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна", roster: ["a1@x.io"] }, 1);
+    await learnVoice(paths, { meetingId: other, speakerKey: "spk:1", name: "Анна", roster: ["b1@x.io", "b2@x.io"] }, 2);
+    expect(await rosters()).toEqual({ Анна: ["a1@x.io", "b1@x.io", "b2@x.io"] });
+    // The second meeting's speaker was Борис all along.
+    await learnVoice(paths, { meetingId: other, speakerKey: "spk:1", name: "Борис", roster: ["b1@x.io", "b2@x.io"] }, 3);
+    expect(await rosters()).toEqual({ Анна: ["a1@x.io"], Борис: ["b1@x.io", "b2@x.io"] });
+    expect(await listVoices(paths)).toEqual([
+      { name: "Анна", seconds: 12, meetings: 1, updatedAt: 3 },
+      { name: "Борис", seconds: 20, meetings: 1, updatedAt: 3 },
+    ]);
   });
 
   it("forgets a voice by name", async () => {
