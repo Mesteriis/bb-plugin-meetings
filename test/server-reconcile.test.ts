@@ -93,7 +93,7 @@ describe("join", () => {
       avatarVideo: null,
       liveTranscription: true,
       autoTranscribe: true,
-      transcriber: { gigaamUrl: GIGAAM_URL, diarization: "ui", speakerLagMs: 500, keepRawAudio: true, threads: 0 },
+      transcriber: { gigaamUrl: GIGAAM_URL, diarization: "ui", speakerLagMs: 500, keepRawAudio: true, threads: 0, recognizeVoices: true },
       createdAt: config.createdAt,
     });
     expect(start?.hostId).toBe("host-1");

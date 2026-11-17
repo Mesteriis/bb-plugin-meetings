@@ -99,6 +99,28 @@ describe("expanded meeting features", () => {
     slot.lifecycle.unmount();
   });
 
+  it("lists the remembered voices and forgets one on request", async () => {
+    let voices = [
+      { name: "Анна", seconds: 372, meetings: 2, updatedAt: 1 },
+      { name: "Борис", seconds: 41, meetings: 1, updatedAt: 2 },
+    ];
+    const slot = await page("", handlers({
+      "notetaker.settings": () => ({ settings: { ...SETTINGS, voiceRecognition: true } }),
+      "voices.list": () => ({ voices }),
+      "voices.forget": (input: { name: string }) => { voices = voices.filter(voice => voice.name !== input.name); return { voices }; },
+    }));
+    await settingsTab("Запись");
+    expand("Голоса говорящих");
+    await screen.findByText("Анна");
+    expect(screen.getByText("6 мин речи, 2 встречи")).toBeTruthy();
+    expect(screen.getByText("41 с речи, 1 встреча")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Забыть голос: Анна" }));
+    await waitFor(() => expect(screen.queryByText("Анна")).toBeNull());
+    expect(screen.getByText("Борис")).toBeTruthy();
+    expect(calls(slot, "voices.forget")).toEqual([{ name: "Анна" }]);
+    slot.lifecycle.unmount();
+  });
+
   it("copies a built-in template into an editable custom template and sets it as default", async () => {
     let catalog = [...templates];
     const slot = await page("", handlers({

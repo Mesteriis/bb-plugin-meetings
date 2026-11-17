@@ -31,6 +31,8 @@ export const transcriberConfigSchema = z
     glossary: z.string().max(4000).optional(),
     /** Local recording: the microphone speaker's display name (default "Я"). */
     ownerName: z.string().max(64).optional(),
+    /** Name clusters after known voices (<hostData>/voices.json); absent = on. */
+    recognizeVoices: z.boolean().optional(),
     /** Local recording: the directory of the downloaded Whisper model (host path). */
     whisperModel: z.string().max(4096).optional(),
   })
@@ -230,7 +232,8 @@ export const transcriberStateSchema = z.object({
 });
 export type TranscriberState = z.infer<typeof transcriberStateSchema>;
 
-export const SPEAKER_SOURCES = ["ui", "acoustic", "mixed", "none"] as const;
+/** "voice": a cluster recognized as a voice the owner has named before (DESIGN §16). */
+export const SPEAKER_SOURCES = ["ui", "acoustic", "mixed", "voice", "none"] as const;
 export const speakerSourceSchema = z.enum(SPEAKER_SOURCES);
 export type SpeakerSource = z.infer<typeof speakerSourceSchema>;
 
