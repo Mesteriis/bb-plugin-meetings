@@ -50,7 +50,7 @@ describe("speakerCentroid", () => {
 describe("mergeVoice", () => {
   it("starts a voice from its first sample", () => {
     expect(mergeVoice(null, "Анна", { vector: vec(1, 0), seconds: 40 }, 1000)).toEqual({
-      name: "Анна", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, meetings: 1, updatedAt: 1000,
+      name: "Анна", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, meetings: 1, updatedAt: 1000, roster: [],
     });
   });
 
@@ -59,6 +59,14 @@ describe("mergeVoice", () => {
     const merged = mergeVoice(first, "Анна", { vector: vec(0, 1), seconds: 10 }, 2000);
     expect(rounded(decodeEmbedding(merged.embedding)!)).toEqual([0.949, 0.316]);
     expect({ seconds: merged.seconds, meetings: merged.meetings, updatedAt: merged.updatedAt }).toEqual({ seconds: 40, meetings: 2, updatedAt: 2000 });
+  });
+});
+
+describe("mergeVoice roster", () => {
+  it("remembers who was invited to the meetings a voice was learned in", () => {
+    const first = mergeVoice(null, "Анна", { vector: vec(1, 0), seconds: 30 }, 1000, ["a@x.io", "b@x.io"]);
+    expect(first.roster).toEqual(["a@x.io", "b@x.io"]);
+    expect(mergeVoice(first, "Анна", { vector: vec(1, 0), seconds: 10 }, 2000, ["b@x.io", "c@x.io"]).roster).toEqual(["a@x.io", "b@x.io", "c@x.io"]);
   });
 });
 
@@ -84,7 +92,8 @@ describe("learnVoice, listVoices, forgetVoice", () => {
   afterEach(() => fs.rm(root, { recursive: true, force: true }));
 
   it("remembers a named speaker and lists them without the embedding", async () => {
-    expect(await learnVoice(hostPaths(root), { meetingId, speakerKey: "spk:1", name: "Анна" }, 5000)).toEqual({ learned: true, reason: null, seconds: 12 });
+    expect(await learnVoice(hostPaths(root), { meetingId, speakerKey: "spk:1", name: "Анна", roster: ["a@x.io"] }, 5000)).toEqual({ learned: true, reason: null, seconds: 12 });
+    expect(JSON.parse(await fs.readFile(path.join(root, "voices.json"), "utf8")).voices[0].roster).toEqual(["a@x.io"]);
     expect(await listVoices(hostPaths(root))).toEqual([{ name: "Анна", seconds: 12, meetings: 1, updatedAt: 5000 }]);
   });
 

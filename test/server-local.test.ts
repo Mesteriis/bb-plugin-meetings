@@ -196,7 +196,7 @@ describe("local recording auto-record", () => {
       });
       loaded.service.renameSpeaker(id, "spk:1", name);
       await loaded.service.voicesSettled();
-      expect(loaded.fake.voiceLearnCalls).toEqual(expected.map((call) => ({ meetingId: id, ...call })));
+      expect(loaded.fake.voiceLearnCalls).toEqual(expected.map((call) => ({ meetingId: id, ...call, roster: [] })));
     }
   });
 
@@ -231,6 +231,26 @@ describe("local recording auto-record", () => {
     expect(prompt).toContain("- spk:1 — «Спикер 1», 1 мин 30 с, 75 % речи");
     expect(prompt).toContain("Уже названы, не переименовывай: «Я» (ui:Я).");
     expect(prompt).toContain("Приглашённые по календарю (кто-то мог не прийти, мог прийти кто-то ещё): Анна Смирнова.");
+  });
+
+  it("gives the meeting's calendar roster to the transcriber and to the voices learned in it", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.calendarLookup = { access: "granted", title: "Дейли", attendees: ["Анна Смирнова <A.Smirnova@x.io>", "b.orlov@x.io"] };
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    expect(loaded.fake.rosterCalls).toEqual([{ meetingId: id, roster: ["a.smirnova@x.io", "b.orlov@x.io"] }]);
+    const row = (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): { options: object } } }).repo.updateMeeting(id, {
+      speakers: [{ key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 }],
+    });
+    expect(loaded.service.transcriberConfigFor(row as never, { ...macSettings(), diarization: "ui+acoustic", speakerLagMs: 700, keepRawAudio: false } as never, null)).toMatchObject({
+      roster: ["a.smirnova@x.io", "b.orlov@x.io"],
+    });
+    loaded.service.renameSpeaker(id, "spk:1", "Анна");
+    await loaded.service.voicesSettled();
+    expect(loaded.fake.voiceLearnCalls).toEqual([{ meetingId: id, speakerKey: "spk:1", name: "Анна", roster: ["a.smirnova@x.io", "b.orlov@x.io"] }]);
   });
 
   it("names a local recording after the calendar event it belongs to", async () => {

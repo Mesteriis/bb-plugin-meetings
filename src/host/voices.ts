@@ -22,9 +22,14 @@ export interface Voice {
   /** Meetings it was learned from. */
   readonly meetings: number;
   readonly updatedAt: number;
+  /** Calendar invitees (roster keys) of the meetings the voice was learned in: where to expect it. */
+  readonly roster: readonly string[];
 }
 
-export type VoiceSummary = Omit<Voice, "embedding">;
+export type VoiceSummary = Omit<Voice, "embedding" | "roster">;
+
+/** A voice keeps at most this many roster keys. */
+const VOICE_ROSTER_MAX = 300;
 
 export interface Centroid {
   readonly vector: Float32Array;
@@ -80,14 +85,15 @@ export function speakerCentroid(segments: readonly SpeakerPiece[], embeddings: R
 }
 
 /** A voice with a new sample averaged in by the amount of speech behind each. */
-export function mergeVoice(existing: Voice | null, name: string, sample: Centroid, now: number): Voice {
+export function mergeVoice(existing: Voice | null, name: string, sample: Centroid, now: number, roster: readonly string[] = []): Voice {
   const old = existing === null ? null : decodeEmbedding(existing.embedding);
+  const seen = [...new Set([...(existing?.roster ?? []), ...roster])].slice(0, VOICE_ROSTER_MAX);
   if (existing === null || old === null || old.length !== sample.vector.length) {
-    return { name, embedding: encodeEmbedding(sample.vector), seconds: sample.seconds, meetings: 1, updatedAt: now };
+    return { name, embedding: encodeEmbedding(sample.vector), seconds: sample.seconds, meetings: 1, updatedAt: now, roster: seen };
   }
   const weight = Math.min(existing.seconds, VOICE_WEIGHT_CAP_S);
   const mixed = unit(old.map((value, index) => value * weight + sample.vector[index]! * sample.seconds)) ?? sample.vector;
-  return { name, embedding: encodeEmbedding(mixed), seconds: existing.seconds + sample.seconds, meetings: existing.meetings + 1, updatedAt: now };
+  return { name, embedding: encodeEmbedding(mixed), seconds: existing.seconds + sample.seconds, meetings: existing.meetings + 1, updatedAt: now, roster: seen };
 }
 
 function voicesFile(paths: HostPaths): string {
@@ -98,7 +104,7 @@ async function readVoices(paths: HostPaths): Promise<Voice[]> {
   const data = (await readJson(voicesFile(paths))) as { voices?: unknown } | null;
   const voices: Voice[] = [];
   for (const entry of Array.isArray(data?.voices) ? data.voices : []) {
-    const { name, embedding, seconds, meetings, updatedAt } = (entry ?? {}) as Record<string, unknown>;
+    const { name, embedding, seconds, meetings, updatedAt, roster } = (entry ?? {}) as Record<string, unknown>;
     if (typeof name !== "string" || name.trim() === "" || decodeEmbedding(embedding) === null) continue;
     voices.push({
       name: name.trim(),
@@ -106,6 +112,7 @@ async function readVoices(paths: HostPaths): Promise<Voice[]> {
       seconds: typeof seconds === "number" ? seconds : 0,
       meetings: typeof meetings === "number" ? meetings : 1,
       updatedAt: typeof updatedAt === "number" ? updatedAt : 0,
+      roster: Array.isArray(roster) ? roster.filter((key): key is string => typeof key === "string") : [],
     });
   }
   return voices;
@@ -131,6 +138,8 @@ export interface LearnVoiceInput {
   readonly meetingId: string;
   readonly speakerKey: string;
   readonly name: string;
+  /** Calendar invitees of the meeting (roster keys). */
+  readonly roster?: readonly string[];
 }
 
 export interface LearnVoiceResult {
@@ -160,7 +169,7 @@ export async function learnVoice(paths: HostPaths, input: LearnVoiceInput, now: 
   const name = input.name.trim();
   const voices = await readVoices(paths);
   const index = voices.findIndex((voice) => voice.name === name);
-  const merged = mergeVoice(index === -1 ? null : voices[index]!, name, sample, now);
+  const merged = mergeVoice(index === -1 ? null : voices[index]!, name, sample, now, input.roster ?? []);
   if (index === -1) voices.push(merged);
   else voices[index] = merged;
   await writeJsonAtomic(voicesFile(paths), { version: 1, voices });

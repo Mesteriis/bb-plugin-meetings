@@ -3,6 +3,7 @@
 // snapshots to statuses, ingests segments, notifies threads and runs the
 // scheduler/reconcile loop. RPC, CLI, tools and HTTP are thin layers over it.
 import { buildNamingPrompt } from "./speaker-naming.js";
+import { rosterKeys } from "./roster.js";
 import type { BbPluginApi, ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import { MAX_SEGMENTS_PAGE, type EnvReport, type HostContract, type RuntimeSnapshot } from "../shared/contract.js";
@@ -578,6 +579,7 @@ export class MeetingsService {
       language: settings.localLanguage.trim() || "ru",
       glossary: settings.localGlossary,
       ownerName: settings.localOwnerName.trim() || "Я",
+      roster: rosterKeys(row.options.calendarAttendees ?? []),
     };
   }
 
@@ -1226,6 +1228,8 @@ export class MeetingsService {
         // Not over a title the owner has typed meanwhile.
         this.repo.updateMeeting(id, row.title === defaultTitle ? { title: found.title.slice(0, 200), options } : { options });
         this.publishMeeting(id);
+        // The transcriber reads the roster in its final pass, as a hint for known voices.
+        return this.call("local.setRoster", { meetingId: id, roster: rosterKeys(options.calendarAttendees) }, { hostId, timeoutMs: 15_000 }).then(() => undefined);
       })
       .catch((error: unknown) => this.bb.log.warn(`No calendar title for ${id}: ${errorMessage(error)}`))
       .finally(() => this.titleLookups.delete(task));
@@ -1490,7 +1494,8 @@ export class MeetingsService {
       .then(async (settings) => {
         if (!settings.voiceRecognition) return;
         const hostId = row.hostId ?? (await this.primaryHostId());
-        const result = await this.call("voices.learn", { meetingId: row.id, speakerKey, name }, { hostId, timeoutMs: 30_000 });
+        const roster = rosterKeys(row.options.calendarAttendees ?? []);
+        const result = await this.call("voices.learn", { meetingId: row.id, speakerKey, name, roster }, { hostId, timeoutMs: 30_000 });
         this.bb.log.info(
           result.learned
             ? `Remembered a voice from ${row.id} (${Math.round(result.seconds)} s of speech)`

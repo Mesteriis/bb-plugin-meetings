@@ -1186,7 +1186,7 @@ class VoiceRecognitionTests(unittest.TestCase):
                 "x",
             ]}, f)
         voices = tr.load_voices(path)
-        self.assertEqual([name for name, _ in voices], ["Анна"])
+        self.assertEqual([name for name, _, _ in voices], ["Анна"])
         self.assertAlmostEqual(float(voices[0][1] @ self.anna), 1.0, places=5)
         self.assertEqual(tr.load_voices(os.path.join(self.tmp, "missing.json")), [])
 
@@ -1203,6 +1203,35 @@ class VoiceRecognitionTests(unittest.TestCase):
         self.assertEqual(tr.match_voices({0: (between, 60.0)}, [("Анна", self.anna), ("Борис", self.boris)]), {})
         # Too little speech to trust the cluster.
         self.assertEqual(tr.match_voices({0: (self.anna, 9.0)}, [("Анна", self.anna)]), {})
+
+    def test_load_voices_reads_the_roster_a_voice_was_learned_with(self):
+        path = os.path.join(self.tmp, "voices.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "voices": [{"name": "Анна", "embedding": tr.encode_embedding(self.anna), "roster": ["a@x.io", "b@x.io", 7]}]}, f)
+        self.assertEqual(tr.load_voices(path)[0][2], frozenset({"a@x.io", "b@x.io"}))
+
+    def test_voice_expected_needs_half_of_the_meetings_roster(self):
+        team = ["a@x.io", "b@x.io", "c@x.io", "d@x.io"]
+        self.assertTrue(tr.voice_expected({"a@x.io", "b@x.io", "z@x.io"}, team))
+        self.assertFalse(tr.voice_expected({"a@x.io", "z@x.io"}, team))
+        self.assertFalse(tr.voice_expected({"a@x.io"}, []))
+        self.assertFalse(tr.voice_expected(set(), team))
+
+    def test_match_voices_eases_the_match_for_a_voice_the_calendar_expects(self):
+        # 0.55 similar: not enough for a stranger, enough for someone from this meeting's roster.
+        other = tr.unit(self.rng.normal(size=32))
+        other = tr.unit(other - (other @ self.anna) * self.anna)
+        centroid = tr.unit(0.55 * self.anna + (1 - 0.55 ** 2) ** 0.5 * other)
+        self.assertAlmostEqual(float(centroid @ self.anna), 0.55, places=4)
+        team = ["a@x.io", "b@x.io", "c@x.io"]
+        stranger = [("Анна", self.anna, frozenset({"q@y.io"}))]
+        teammate = [("Анна", self.anna, frozenset({"a@x.io", "b@x.io"}))]
+        self.assertEqual(tr.match_voices({0: (centroid, 60.0)}, stranger, team), {})
+        self.assertEqual(tr.match_voices({0: (centroid, 60.0)}, teammate, team), {0: "Анна"})
+        self.assertEqual(tr.match_voices({0: (centroid, 60.0)}, teammate, []), {})
+        # Even an expected voice is refused below its own threshold.
+        weak = tr.unit(0.45 * self.anna + (1 - 0.45 ** 2) ** 0.5 * other)
+        self.assertEqual(tr.match_voices({0: (weak, 60.0)}, teammate, team), {})
 
     def test_match_voices_gives_a_voice_to_one_cluster_only(self):
         centroids = {0: (self.near(self.anna, 0.25), 60.0), 1: (self.near(self.anna, 0.05), 60.0)}
