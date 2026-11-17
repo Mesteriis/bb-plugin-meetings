@@ -1202,6 +1202,33 @@ def match_voices(centroids, voices, threshold=VOICE_MATCH_THRESHOLD, margin=VOIC
     return {c: voices[k][0] for k, (c, _) in best.items()}
 
 
+OWNER_VOICE_SHARE = 0.5  # more than this much of a voice came through the microphone: it is the owner's
+
+
+def owner_coverage(mic_loud, clusters, durations):
+    """Which pieces of a local recording are the owner's, per piece.
+
+    mic_loud: the microphone was louder than the system audio during the piece;
+    clusters: the piece's voice, None without an embedding; durations: seconds.
+
+    The microphone alone is not proof: with speakers instead of headphones the
+    remote side reaches it too, and on the first calls a remote voice with two
+    or three such pieces was labelled as the owner in full. So the voice decides:
+    a voice is the owner's when more than half of its speech came through the
+    microphone, and every piece then follows its voice. Only a piece without a
+    voice goes by its own loudness.
+    """
+    mic = collections.defaultdict(float)
+    total = collections.defaultdict(float)
+    for loud, c, d in zip(mic_loud, clusters, durations):
+        if c is not None:
+            total[c] += d
+            if loud:
+                mic[c] += d
+    owners = {c for c in total if mic[c] > OWNER_VOICE_SHARE * total[c]}
+    return [(c in owners) if c is not None else bool(loud) for loud, c in zip(mic_loud, clusters)]
+
+
 def local_final_mode(effective):
     """How a local recording's final speakers are decided. The microphone gives
     the owner the way the meeting UI names a speaker for a bot, so voice-only
@@ -1771,8 +1798,35 @@ class Transcriber:
         size = PcmSource(self.paths["pcm"], 0).size()
         return is_number(expected) and expected > 0 and size is not None and size >= expected
 
+    def _restore_streams(self):
+        """A local recording's mic.pcm and system.pcm from their Opus copies, when the
+        raw files were removed after the first transcript: without them nobody is the
+        owner. Missing copies (recordings made before they were kept) are skipped."""
+        for name in ("mic", "system"):
+            pcm = os.path.join(self.dir, name + ".pcm")
+            ogg = os.path.join(self.dir, name + ".ogg")
+            if os.path.isfile(pcm) or not (os.path.isfile(ogg) and os.path.getsize(ogg) > 0):
+                continue
+            tmp = pcm + ".tmp"
+            cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", ogg,
+                   "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-acodec", "pcm_s16le", tmp]
+            try:
+                done = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=900)
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                remove_quietly(tmp)
+                log(f"could not decode {name}.ogg ({e}): the owner's pieces will not be known")
+                continue
+            if done.returncode != 0:
+                remove_quietly(tmp)
+                log(f"could not decode {name}.ogg: {done.stderr.decode('utf-8', 'replace').strip()[-200:]}")
+                continue
+            os.replace(tmp, pcm)
+            log(f"decoded {name}.ogg -> {name}.pcm")
+
     def _run_offline(self):
         bot = self._read_bot()
+        if self.platform == "local":
+            self._restore_streams()
         # The lossless recording (kept by keepRawAudio, or left by a live run that
         # never finalized) beats decoding the Opus archive, which never replaces it.
         if self._raw_pcm_complete(bot):
@@ -1968,6 +2022,10 @@ class Transcriber:
                         log(f"recognized voices: {', '.join(sorted(voice_names.values()))}")
             elif mode == "acoustic":
                 log("no speaker embeddings: all speakers unknown")
+        if self.platform == "local" and mode != "ui":
+            # The voice decides who the owner is, not single loud pieces (owner_coverage).
+            mine = owner_coverage([bool(c) for c in coverages], own_clusters, [s["end"] - s["start"] for s in segments])
+            coverages = [{self.owner_name: 1.0} if flag else {} for flag in mine]
         decisions = decide_speakers(segments, coverages, own_clusters, mode, voice_names)
         final = []
         for s, (key, label, source) in zip(segments, decisions):

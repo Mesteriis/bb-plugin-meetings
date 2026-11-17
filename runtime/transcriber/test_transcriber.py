@@ -1341,6 +1341,31 @@ class LocalRecordingTests(unittest.TestCase):
         labels = [label for _, label, _ in tr.decide_speakers(segments, coverages, [0, 1, 0], tr.local_final_mode("acoustic"))]
         self.assertEqual(labels, ["Я", "Спикер 1", "Я"])
 
+    def test_owner_coverage_follows_the_voice_not_single_loud_pieces(self):
+        """Sound from the speakers reaches the microphone, so a few pieces of a remote
+        voice look like the owner's. A voice is the owner's only when most of it came
+        through the microphone; every piece then follows its voice."""
+        #            owner's voice (cluster 0)      remote voice (cluster 1)        no embedding
+        mic_loud = [True, True, False,              True, False, False, False,      True, False]
+        clusters = [0, 0, 0,                        1, 1, 1, 1,                     None, None]
+        durations = [5.0, 5.0, 4.0,                 3.0, 6.0, 6.0, 6.0,             1.0, 1.0]
+        self.assertEqual(
+            tr.owner_coverage(mic_loud, clusters, durations),
+            [True, True, True,                      False, False, False, False,     True, False],
+        )
+        # Exactly half through the microphone is not enough to call a voice the owner's.
+        self.assertEqual(tr.owner_coverage([True, False], [0, 0], [5.0, 5.0]), [False, False])
+        self.assertEqual(tr.owner_coverage([True, False], [0, 0], [5.1, 5.0]), [True, True])
+
+    def test_local_final_speakers_do_not_merge_remote_voices_into_the_owner(self):
+        segments = [{"start": float(i), "end": float(i + 1)} for i in range(6)]
+        mic_loud = [True, True, True, False, False, False]
+        clusters = [0, 0, 1, 1, 1, 1]
+        owner = tr.owner_coverage(mic_loud, clusters, [5.0, 5.0, 3.0, 6.0, 6.0, 6.0])
+        coverages = [{"Я": 1.0} if flag else {} for flag in owner]
+        labels = [label for _, label, _ in tr.decide_speakers(segments, coverages, clusters, "ui+acoustic")]
+        self.assertEqual(labels, ["Я", "Я", "Спикер 1", "Спикер 1", "Спикер 1", "Спикер 1"])
+
     def test_cluster_anchored_groups_short_pieces_with_long_ones(self):
         """Three voices; long pieces are clean, short pieces are noisy. Clustering every piece at the
         default threshold scatters the short ones; anchoring on the long ones gives three speakers."""
@@ -1366,6 +1391,23 @@ class LocalRecordingTests(unittest.TestCase):
         X = np.stack([tr.unit(np.eye(4)[i % 4]) for i in range(6)]).astype(np.float32)
         self.assertIsNone(tr.cluster_anchored(X, [1.5] * 6))
         self.assertIsNone(tr.cluster_anchored(X, [4.0, 1.0, 1.0, 1.0, 1.0, 1.0]))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_offline_local_keeps_the_owner_from_the_compressed_streams(self):
+        """After the raw streams were removed, a retranscription restores them from mic.ogg and system.ogg."""
+        d = self._synthetic_local_meeting()
+        for name in ("mic", "system"):
+            pcm = os.path.join(d, name + ".pcm")
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", pcm,
+                            "-c:a", "libopus", "-b:a", "32k", os.path.join(d, name + ".ogg")], check=True)
+            os.remove(pcm)
+
+        def impl(audio, language, initial_prompt):
+            return "слово"
+
+        self.assertEqual(tr.Transcriber(self._local_args(d, "offline"), whisper_impl=impl).run(), 0)
+        labels = [s["speaker"] for s in read_json(os.path.join(d, "transcript.json"))["segments"]]
+        self.assertEqual([label == "Я" for label in labels], [True, False, True])
 
     def test_offline_local_twice_identical(self):
         d = self._synthetic_local_meeting()
