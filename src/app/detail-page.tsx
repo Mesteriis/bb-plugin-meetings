@@ -32,6 +32,7 @@ import { messageOf, useMeetingsRpc } from "./rpc";
 import type { MeetingsNav } from "./route";
 import { speakerColors } from "./speaker-colors";
 import { SpeakersPanel } from "./speakers-panel";
+import { TextFix } from "./text-fix";
 import { SummaryPanel } from "./summary-panel";
 import { speakerOrder, speakerStats } from "./transcript-model";
 import { TranscriptView } from "./transcript-view";
@@ -590,6 +591,9 @@ export function DetailPage({ id, segmentId, nav }: { id: string; segmentId: numb
       {segments.segments.length > 0 && !live ? <AnalysisPanel id={id} onSaved={refetch} onSeek={meeting.hasAudio ? onSeek : null} /> : null}
       {segments.segments.length > 0 ? <AskPanel id={id} nav={nav} /> : null}
       {hasContent ? <SpeakersPanel meetingId={id} stats={stats} colors={colors} onRenamed={onRenamed} /> : null}
+      {final && segments.segments.length > 0 ? (
+        <TextFix meetingId={id} revision={segments.segments.reduce((sum, segment) => sum + segment.text.length, 0)} />
+      ) : null}
       <TranscriptView
         segments={segments.segments}
         final={final}

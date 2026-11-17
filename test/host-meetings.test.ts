@@ -326,7 +326,7 @@ describe("meeting.ensureTranscriber", () => {
     const all = await runs();
     expect(all).toHaveLength(2);
     expect(all[1].argv).toEqual(["--meeting-dir", dir, "--mode", "offline", "--models-dir", paths.models, "--host-data", paths.root, "--threads", "0"]);
-    expect((await readJsonFile(path.join(dir, "config.json"))).transcriber).toEqual(offlineTranscriber);
+    expect((await readJsonFile(path.join(dir, "config.json"))).transcriber).toEqual({ ...offlineTranscriber, whisperFinalModel: "" });
 
     // Final: live ensure does nothing.
     await call("meeting.ensureTranscriber", { meetingId: id, mode: "live", transcriber });

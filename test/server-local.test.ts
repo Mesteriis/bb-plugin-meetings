@@ -324,6 +324,50 @@ describe("local recording auto-record", () => {
     expect(loaded.fake.suggestCalls).toEqual([{ meetingId: id, speakerKeys: ["spk:1"], taken: ["Я", "Анна", "Борис"] }]);
   });
 
+  it("deletes a recording's audio after the retention period and keeps the transcript", async () => {
+    let clock = T0;
+    const loaded = await load({ settings: { ...macSettings(), audioRetentionDays: 30 }, now: () => clock });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    const internals = loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown; getMeeting(id: string): { hasAudio: boolean; transcriptFinal: boolean } }; sweepAudio(): Promise<void> };
+    internals.repo.updateMeeting(id, { status: "done", endedAt: T0 + 60_000, hasAudio: true, transcriptFinal: true });
+    clock = T0 + 29 * 86_400_000;
+    await internals.sweepAudio();
+    expect(loaded.fake.dropAudioCalls).toEqual([]);
+    clock = T0 + 31 * 86_400_000;
+    await internals.sweepAudio();
+    expect(loaded.fake.dropAudioCalls).toEqual([id]);
+    expect(internals.repo.getMeeting(id)).toMatchObject({ hasAudio: false, transcriptFinal: true });
+  });
+
+  it("fixes recognition errors across a meeting, keeps the search in step and puts the text back", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    const repo = (loaded.service as unknown as {
+      repo: { updateMeeting(id: string, patch: object): unknown; upsertSegments(id: string, segments: object[], final: boolean): void; allSegments(id: string): { text: string }[] };
+    }).repo;
+    const segment = (n: number, text: string) => ({ id: n, start: n, end: n + 1, speakerKey: "spk:1", speaker: "Спикер 1", source: "acoustic", text });
+    repo.upsertSegments(id, [segment(0, "Поднимаем кубернетис"), segment(1, "Всё готово"), segment(2, "Кубернетис упал")], true);
+    expect(() => loaded.service.fixText(id, [{ from: "кубернетис", to: "Kubernetes" }])).toThrow();
+    repo.updateMeeting(id, { transcriptFinal: true });
+    expect(loaded.service.fixText(id, [{ from: "кубернетис", to: "Kubernetes" }, { from: "нет такого", to: "x" }])).toEqual({ counts: [2, 0], segments: 2 });
+    expect(repo.allSegments(id).map((s) => s.text)).toEqual(["Поднимаем Kubernetes", "Всё готово", "Kubernetes упал"]);
+    expect(loaded.service.search("Kubernetes", 10).map((hit) => hit.segmentId)).toEqual([0, 2]);
+    expect((await loaded.service.textFixPrompt(id)).corrected).toBe(2);
+    // A second fix on an already corrected segment still remembers the recognised text.
+    loaded.service.fixText(id, [{ from: "Kubernetes упал", to: "Kubernetes лежит" }]);
+    expect(loaded.service.revertTextFixes(id)).toBe(2);
+    expect(repo.allSegments(id).map((s) => s.text)).toEqual(["Поднимаем кубернетис", "Всё готово", "Кубернетис упал"]);
+    expect(loaded.service.search("Kubernetes", 10)).toEqual([]);
+  });
+
   it("leaves the stored roster alone when the meeting has no calendar invitees", async () => {
     const loaded = await load({ settings: macSettings(), now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });

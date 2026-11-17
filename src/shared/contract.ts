@@ -299,6 +299,11 @@ export const hostContract = defineRpcContract({
     input: meetingRef,
     output: z.object({ deleted: z.boolean() }).strict(),
   },
+  "meeting.dropAudio": {
+    experimental_description: "Remove a finished meeting's audio files, keeping its transcript (audio retention).",
+    input: meetingRef,
+    output: z.object({ dropped: z.number() }).strict(),
+  },
   "runtime.list": {
     experimental_description: "Meeting ids that have a directory on this host.",
     input: z.object({}).strict(),

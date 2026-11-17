@@ -517,6 +517,18 @@ export async function setTranscriberRoster(paths: HostPaths, meetingId: string, 
   return mergeConfigTranscriber(meetingDir(paths, meetingId), { roster: [...roster], ...(hints.length > 0 ? { hints: [...hints] } : {}) });
 }
 
+/** Remove a meeting's audio (the archive, the stream copies, raw leftovers); the transcript stays. Returns how many files went. */
+export async function dropAudio(paths: HostPaths, meetingId: string): Promise<number> {
+  const dir = meetingDir(paths, meetingId);
+  let dropped = 0;
+  for (const name of ["audio.ogg", "mic.ogg", "system.ogg", "audio.pcm", "mic.pcm", "system.pcm", "audio.decoded.pcm"]) {
+    if (!(await isFile(file(dir, name)))) continue;
+    await removeTree(file(dir, name));
+    dropped += 1;
+  }
+  return dropped;
+}
+
 /** Where the exact model is, when the owner asked for it and it is fully downloaded; "" otherwise. */
 export async function finalModelPatch(paths: HostPaths, finalModel: unknown): Promise<{ whisperFinalModel: string }> {
   const ready = finalModel === "large-v3" && (await isFile(path.join(paths.whisperFinalModel, ".complete")));

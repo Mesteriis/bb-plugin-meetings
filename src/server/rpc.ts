@@ -98,6 +98,8 @@ export function registerRpc(bb: BbPluginApi, service: MeetingsService): void {
     "google.disconnect": () => service.google.disconnect(),
 
     "meetings.namingPrompt": ({ id }) => ({ prompt: service.namingPrompt(id) }),
+    "meetings.textFixPrompt": ({ id }) => service.textFixPrompt(id),
+    "meetings.revertTextFixes": ({ id }) => ({ reverted: service.revertTextFixes(id) }),
     "meetings.voiceSuggestions": async ({ id }) => ({ suggestions: await service.voiceSuggestions(id) }),
     "voices.list": async () => ({ voices: await service.listVoices() }),
     "voices.forget": async ({ name }) => ({ voices: await service.forgetVoice(name) }),
