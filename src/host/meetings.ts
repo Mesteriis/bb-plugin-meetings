@@ -62,6 +62,22 @@ export const STOP_ESCALATION_MS = 45_000;
  * only a bot that is hung or ignores the request gets killed.
  */
 export const AUTO_STOP_ESCALATION_MS = 2 * STOP_ESCALATION_MS;
+/**
+ * A local recording's helper compresses three streams after the stop, which on
+ * a busy Mac took more than 45 s for a 26-minute call: the kill left a
+ * truncated audio.ogg and no stream copies. It gets much longer.
+ */
+export const LOCAL_STOP_ESCALATION_MS = 15 * 60_000;
+
+/** How long a recorder of this platform may take to finish after a stop request before it is killed. */
+export function stopEscalationMs(platform: unknown): number {
+  return platform === "local" ? LOCAL_STOP_ESCALATION_MS : STOP_ESCALATION_MS;
+}
+
+async function meetingStopEscalationMs(dir: string): Promise<number> {
+  const config = (await readJson(file(dir, F.config))) as { platform?: unknown } | null;
+  return stopEscalationMs(config?.platform);
+}
 /** SIGTERM before SIGKILL when tearing down a meeting's processes (ffmpeg finalizes, Chrome flushes the profile). */
 const TEARDOWN_GRACE_MS = 1_500;
 const IMPORT_TIMEOUT_MS = 30 * 60_000;
@@ -139,7 +155,7 @@ export async function snapshot(paths: HostPaths, meetingId: string): Promise<Run
 
   let state = await readState(dir);
   let botPid = await liveBotPid(dir, state, pids, scriptName);
-  if (botPid !== null && (await stopRequestAge(dir)) > AUTO_STOP_ESCALATION_MS) {
+  if (botPid !== null && (await stopRequestAge(dir)) > 2 * (await meetingStopEscalationMs(dir))) {
     // Asked to stop long ago and still running: hung (its own timeouts never fired).
     await forceStopBot(paths, meetingId, dir, pids, botPid);
     botPid = await liveBotPid(dir, state, pids, scriptName);
@@ -701,7 +717,7 @@ export async function stopMeeting(paths: HostPaths, meetingId: string): Promise<
   const state = await readState(dir);
   const botPid = await liveBotPid(dir, state, pids, await recorderScriptName(dir));
   if (botPid !== null) {
-    if (requestedAt !== null && now - requestedAt > STOP_ESCALATION_MS) await forceStopBot(paths, meetingId, dir, pids, botPid);
+    if (requestedAt !== null && now - requestedAt > (await meetingStopEscalationMs(dir))) await forceStopBot(paths, meetingId, dir, pids, botPid);
     else signalPid(botPid, "SIGTERM");
   }
   return snapshot(paths, meetingId);
