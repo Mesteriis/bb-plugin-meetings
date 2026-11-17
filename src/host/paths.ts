@@ -40,6 +40,8 @@ export interface HostPaths {
   readonly pulseClientConf: string;
   /** The local Whisper model directory (DESIGN §15). */
   readonly whisperModel: string;
+  /** The exact model for final transcripts; present only after the owner asked for it. */
+  readonly whisperFinalModel: string;
   /** The compiled capture helper (local recording). */
   readonly capture: string;
   /** The capture helper's embedded Swift source. */
@@ -90,6 +92,7 @@ export function hostPaths(dataDir: string, runtimeHash: string = RUNTIME_HASH): 
     zoomProfile: path.join(profiles, "zoom"),
     gigaamFile: path.join(root, "gigaam.json"),
     whisperModel: path.join(root, "models", "whisper-large-v3-turbo"),
+    whisperFinalModel: path.join(root, "models", "whisper-large-v3"),
     capture: path.join(root, "bin", "capture"),
     captureSource: path.join(runtime, "capture", "main.swift"),
     pulseClientConf: path.join(root, "pulse-client.conf"),

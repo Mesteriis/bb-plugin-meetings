@@ -115,6 +115,16 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
               </select>
             </Field>
           </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Field label="Модель для итоговой расшифровки" hint="Точная large-v3 лучше на смеси русского с английским, но занимает ещё около 3 ГБ и работает медленнее. После выбора запустите установку.">
+              <select className={fieldClass} aria-label="Модель для итоговой расшифровки" value={String(value("localFinalModel") ?? "turbo")} onChange={event => update("localFinalModel", event.target.value)}>
+                <option value="turbo">Быстрая (large-v3-turbo)</option>
+                <option value="large-v3">Точная (large-v3)</option>
+              </select>
+            </Field>
+            {number("audioRetentionDays", "Удалять аудио через, дней (0 — хранить)", 0, 3650)}
+            {text("localSkipTitles", "Не записывать встречи с названием", "Одно правило на строку, например: личное")}
+          </div>
           <div className="mt-3">
             <Field label="Приложения для записи" hint="Пусто — все поддерживаемые">
               <div className="grid gap-2 sm:grid-cols-2">
