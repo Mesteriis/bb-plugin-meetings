@@ -4,8 +4,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mergeConfigTranscriber, setTranscriberRoster } from "../src/host/meetings.js";
+import { mergeConfigTranscriber, setTranscriberRoster, stopEscalationMs } from "../src/host/meetings.js";
 import { hostPaths } from "../src/host/paths.js";
+
+describe("stopEscalationMs", () => {
+  it("gives a local recording fifteen minutes to compress its streams, a bot 45 seconds to leave", () => {
+    expect(stopEscalationMs("local")).toBe(900_000);
+    expect(stopEscalationMs("zoom")).toBe(45_000);
+    expect(stopEscalationMs(undefined)).toBe(45_000);
+  });
+});
 
 describe("mergeConfigTranscriber", () => {
   let root: string;

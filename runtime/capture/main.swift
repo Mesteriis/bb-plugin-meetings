@@ -593,6 +593,13 @@ final class SystemTapConverter {
 
 /// Compress audio.pcm (s16le 16 kHz mono) to audio.ogg (Opus 48 kHz mono), like bot mode.
 func compressOgg(_ meetingDir: String, _ name: String = "audio") -> Bool {
+  guard let process = startCompressOgg(meetingDir, name) else { return false }
+  process.waitUntilExit()
+  return process.terminationStatus == 0
+}
+
+/// Start compressing one stream; nil when ffmpeg could not be started.
+func startCompressOgg(_ meetingDir: String, _ name: String) -> Process? {
   let pcm = meetingDir + "/" + name + ".pcm"
   let ogg = meetingDir + "/" + name + ".ogg"
   let process = Process()
@@ -606,11 +613,21 @@ func compressOgg(_ meetingDir: String, _ name: String = "audio") -> Bool {
   process.standardError = FileHandle.nullDevice
   do {
     try process.run()
-    process.waitUntilExit()
   } catch {
-    return false
+    return nil
   }
-  return process.terminationStatus == 0
+  return process
+}
+
+/// Compress the streams at once: the host kills a recorder that takes too long
+/// after a stop, and three runs in a row tripled that time. Returns the names that failed.
+func compressStreams(_ meetingDir: String, _ names: [String]) -> [String] {
+  let started = names.map { ($0, startCompressOgg(meetingDir, $0)) }
+  return started.compactMap { name, process in
+    guard let process = process else { return name }
+    process.waitUntilExit()
+    return process.terminationStatus == 0 ? nil : name
+  }
 }
 
 /// How long the system path may take to start before it is reported as not started.
@@ -1302,13 +1319,12 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
   microphone.stop()
   streams.finish()
 
-  if !compressOgg(meetingDir) {
-    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "audio.ogg was not produced (ffmpeg missing or failed); playback unavailable"])
-  }
   // The two streams stay as compressed copies: a later retranscription needs them
   // to tell the owner from the remote side once the raw PCM has been removed.
-  for stream in ["mic", "system"] where !compressOgg(meetingDir, stream) {
-    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": "\(stream).ogg was not produced; a retranscription will not know the owner's pieces"])
+  for stream in compressStreams(meetingDir, ["audio", "mic", "system"]) {
+    appendEvent(events, ["t": nowMs(), "level": "warn", "msg": stream == "audio"
+      ? "audio.ogg was not produced (ffmpeg missing or failed); playback unavailable"
+      : "\(stream).ogg was not produced; a retranscription will not know the owner's pieces"])
   }
 
   let mic = streams.stats(RecordingStreams.mic)
