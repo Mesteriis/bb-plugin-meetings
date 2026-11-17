@@ -261,6 +261,24 @@ describe("local recording auto-record", () => {
     expect(loaded.service.namingPrompt(id)).toContain("Уже названы, не переименовывай: «Вера» (spk:1).");
   });
 
+  it("takes a sample back with recognition off, and sends a forget after the learn that was asked for first", async () => {
+    const loaded = await load({ settings: { ...macSettings(), voiceRecognition: false }, now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown } }).repo.updateMeeting(id, {
+      speakers: [{ key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 }],
+    });
+    loaded.service.renameSpeaker(id, "spk:1", "Анна");
+    loaded.service.renameSpeaker(id, "spk:1", "");
+    await loaded.service.forgetVoice("Анна");
+    expect(loaded.fake.voiceLearnCalls).toEqual([]);
+    expect(loaded.fake.voiceRetractCalls).toEqual([{ meetingId: id, speakerKey: "spk:1" }]);
+    expect(loaded.fake.voiceOrder).toEqual(["retract", "forget"]);
+  });
+
   it("leaves the stored roster alone when the meeting has no calendar invitees", async () => {
     const loaded = await load({ settings: macSettings(), now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });

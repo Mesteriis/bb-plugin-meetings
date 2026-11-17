@@ -145,6 +145,8 @@ export class MeetingsService {
   private readonly titleLookups = new Set<Promise<void>>();
   /** Voices being remembered after a speaker was named. */
   private readonly voiceTasks = new Set<Promise<void>>();
+  /** Voice changes reach the host in the order the owner made them. */
+  private voiceQueue: Promise<void> = Promise.resolve();
   /** Settles once an in-flight start has recorded its outcome (a stop waits for it). */
   private readonly startSettled = new Map<string, Promise<void>>();
   /** Joins whose caller is waiting and reports a failure itself (no thread message). */
@@ -1492,10 +1494,9 @@ export class MeetingsService {
    * background, and never an error for the rename itself.
    */
   private rememberVoice(row: MeetingRow, speakerKey: string, name: string): void {
-    const task = this.settings
-      .get()
+    const task = this.voiceQueue
+      .then(() => this.settings.get())
       .then(async (settings) => {
-        if (!settings.voiceRecognition) return;
         const hostId = row.hostId ?? (await this.primaryHostId());
         if (name === "") {
           // The name was removed: the voice must not keep what this speaker taught it.
@@ -1505,6 +1506,8 @@ export class MeetingsService {
           this.bb.log.info(retracted ? `Took a voice sample of ${row.id} back` : `No voice sample of ${row.id} to take back for ${speakerKey}`);
           return;
         }
+        // The setting stops learning only: taking a sample back above is cleanup and always runs.
+        if (!settings.voiceRecognition) return;
         const roster = rosterKeys(row.options.calendarAttendees ?? []);
         const result = await this.call("voices.learn", { meetingId: row.id, speakerKey, name, roster }, { hostId, timeoutMs: 30_000 });
         this.bb.log.info(
@@ -1516,6 +1519,7 @@ export class MeetingsService {
       .catch((error: unknown) => this.bb.log.warn(`Could not remember a voice from ${row.id}: ${errorMessage(error)}`))
       .finally(() => this.voiceTasks.delete(task));
     this.voiceTasks.add(task);
+    this.voiceQueue = task;
   }
 
   /** The request for an agent that names this meeting's speakers from what was said. */
@@ -1551,7 +1555,12 @@ export class MeetingsService {
 
   /** Delete a voice and return the ones that remain. */
   async forgetVoice(name: string): Promise<{ name: string; seconds: number; meetings: number; updatedAt: number }[]> {
-    await this.call("voices.forget", { name }, { timeoutMs: 15_000 });
+    const forgotten = this.voiceQueue.then(() => this.call("voices.forget", { name }, { timeoutMs: 15_000 }));
+    this.voiceQueue = forgotten.then(
+      () => undefined,
+      () => undefined,
+    );
+    await forgotten;
     return this.listVoices();
   }
 

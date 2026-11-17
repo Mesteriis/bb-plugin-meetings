@@ -130,6 +130,8 @@ export class FakeRuntime {
   voiceLearnCalls: Array<{ meetingId: string; speakerKey: string; name: string; roster?: string[] }> = [];
   rosterCalls: Array<{ meetingId: string; roster: string[] }> = [];
   voiceRetractCalls: Array<{ meetingId: string; speakerKey: string }> = [];
+  /** Voice methods in the order the host received them. */
+  voiceOrder: string[] = [];
   voices: Array<{ name: string; seconds: number; meetings: number; updatedAt: number }> = [];
   /** The answer of local.calendarEvent, or "throw" to fail the call. */
   calendarLookup: { access: string; title: string | null; attendees: readonly string[] } | "throw" = { access: "granted", title: null, attendees: [] };
@@ -315,10 +317,12 @@ export class FakeRuntime {
         };
       }
       case "voices.learn": {
+        this.voiceOrder.push("learn");
         this.voiceLearnCalls.push({ meetingId: args.meetingId as string, speakerKey: args.speakerKey as string, name: args.name as string, roster: args.roster as string[] });
         return { learned: true, reason: null, seconds: 42 };
       }
       case "voices.retract":
+        this.voiceOrder.push("retract");
         this.voiceRetractCalls.push({ meetingId: args.meetingId as string, speakerKey: args.speakerKey as string });
         return { retracted: true };
       case "local.setRoster":
@@ -327,6 +331,7 @@ export class FakeRuntime {
       case "voices.list":
         return { voices: this.voices };
       case "voices.forget": {
+        this.voiceOrder.push("forget");
         const before = this.voices.length;
         this.voices = this.voices.filter((voice) => voice.name !== args.name);
         return { forgotten: this.voices.length < before };

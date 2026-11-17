@@ -1234,8 +1234,15 @@ person by themselves.
   transcription renumbers the keys) loses that sample there, and removing a
   name takes the sample back (`voices.retract`); a voice left with nothing
   is deleted. A voice from before samples were kept counts as one sample of
-  no meeting. All changes of the file go through one queue per host process
-  (fsutil `serialized`): the agent names several speakers within a second.
+  no meeting. A sample carries its meeting's invitees, and the voice's roster
+  is their union, so a retracted sample takes its invitees with it. All
+  changes of the file go through one queue per host process (fsutil
+  `serialized`), reading the meeting's files included, and the server sends
+  them in the order they were made: the agent names several speakers within
+  a second, and a forget must not be undone by an earlier, slower learn.
+  Taking a sample back runs even with voiceRecognition off. It is best
+  effort: a sample of no meeting, or a speaker whose centroid moved below
+  0.9 after a new transcription, is not found (the server logs that).
   The rename itself never fails because of this.
 * **Recognition.** In the final pass the transcriber (match_voices) compares
   each cluster's duration-weighted centroid with the known voices. A cluster
