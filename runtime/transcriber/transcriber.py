@@ -1110,6 +1110,48 @@ def cluster_embeddings(X, durations, threshold):
     return np.array([order[int(lab)] for lab in labels], dtype=int)
 
 
+ANCHOR_MIN_S = 3.0  # pieces at least this long define the voices of a local recording
+ANCHOR_THRESHOLD = 0.5  # similarity at which two groups of long pieces are one voice
+ANCHOR_SPEAKER_S = 10.0  # a group of long pieces this long in total is a speaker
+
+
+def cluster_anchored(X, durations, threshold=ANCHOR_THRESHOLD):
+    """Speakers of a recording where voice is all there is to go by (a local
+    recording's remote side). An embedding of a 1-2 s piece is too noisy to
+    cluster: at the default threshold every other short piece becomes its own
+    "speaker". So the voices are found among the long pieces only, and every
+    piece then goes to the voice it is most similar to.
+
+    Returns a label per row, numbered by first appearance, or None when there
+    are too few long pieces to find a voice (the caller clusters as before).
+    """
+    durations = np.asarray(durations, dtype=np.float32)
+    anchors = np.flatnonzero(durations >= ANCHOR_MIN_S)
+    if len(anchors) < 2:
+        return None
+    X = np.asarray(X, dtype=np.float32)
+    groups = agglomerative(X[anchors], threshold)
+    centroids = []
+    for g in range(int(groups.max()) + 1):
+        rows = anchors[groups == g]
+        if float(durations[rows].sum()) >= ANCHOR_SPEAKER_S:
+            centroids.append(unit(X[rows].mean(axis=0)))
+    if not centroids:
+        return None
+    nearest = np.argmax(X @ np.stack(centroids).T, axis=1)
+    order = {}
+    for lab in nearest:
+        order.setdefault(int(lab), len(order))
+    return np.array([order[int(lab)] for lab in nearest], dtype=int)
+
+
+def local_final_mode(effective):
+    """How a local recording's final speakers are decided. The microphone gives
+    the owner the way the meeting UI names a speaker for a bot, so voice-only
+    ("acoustic", a bot setting) still keeps the owner's label."""
+    return "ui" if effective == "ui" else "ui+acoustic"
+
+
 # ----------------------------------------------------------------------------- final speakers
 
 
@@ -1839,7 +1881,7 @@ class Transcriber:
         else:
             timeline = SpeakerTimeline(self.paths["speakers"], self.lag_ms).load_all()
             coverages = [ui_coverage(timeline, self.rec_start, s["start"], s["end"]) for s in segments]
-        mode = self.effective_diarization
+        mode = local_final_mode(self.effective_diarization) if self.platform == "local" else self.effective_diarization
         own_clusters = [None] * len(segments)
         if mode != "ui":
             embs = load_embeddings(self.paths["embeddings"], self.next_id)
@@ -1848,7 +1890,9 @@ class Transcriber:
                 X = np.stack([embs[segments[i]["id"]] for i in idx])
                 durations = [segments[i]["end"] - segments[i]["start"] for i in idx]
                 threshold = cluster_threshold()
-                labels = cluster_embeddings(X, durations, threshold)
+                labels = cluster_anchored(X, durations) if self.platform == "local" else None
+                if labels is None:
+                    labels = cluster_embeddings(X, durations, threshold)
                 for i, lab in zip(idx, labels):
                     own_clusters[i] = int(lab)
                 log(f"clustering: {len(idx)} embeddings -> {int(labels.max()) + 1} cluster(s) at {threshold}")

@@ -658,6 +658,8 @@ func systemCaptureIssue(_ status: SystemCaptureStatus, final: Bool) -> String? {
 }
 
 let MICROPHONE_PERMISSION = "проверьте, что звук на устройстве не выключен, оно подключено (у ноутбука не закрыта крышка) и BB разрешён доступ к микрофону в Системных настройках → Конфиденциальность и безопасность"
+/// A microphone that worked and then delivers exact zeros for this long has gone silent.
+let MICROPHONE_GONE_SAMPLES = SAMPLE_RATE * 300
 /// No buffers for this long means the microphone has stopped.
 let MICROPHONE_STALL_S = 10.0
 
@@ -674,9 +676,10 @@ struct MicrophoneStatus {
   var stalledSeconds = 0.0
 }
 
-/// The microphone issue, or nil. A live microphone normally carries some noise, so
-/// ten seconds of exact zeros mean it is muted in hardware, dead, or withheld by
-/// macOS; which of these cannot be told from the samples, and the message says so.
+/// The microphone issue, or nil. A microphone that has given nothing but exact
+/// zeros for ten seconds is muted in hardware, dead, or withheld by macOS; which
+/// of these cannot be told from the samples, and the message says so. One that
+/// has carried sound is reported only after five minutes of exact zeros.
 /// No buffers for ten seconds mean the device has gone. Looks at the end of the stream,
 /// so a microphone that worked and then went away is reported.
 func microphoneIssue(_ mic: MicrophoneStatus, final: Bool) -> String? {
@@ -690,7 +693,10 @@ func microphoneIssue(_ mic: MicrophoneStatus, final: Bool) -> String? {
   if mic.stalledSeconds >= MICROPHONE_STALL_S {
     return "Микрофон «\(mic.device)» перестал выдавать звук \(Int(mic.stalledSeconds)) с назад: \(MICROPHONE_PERMISSION)"
   }
-  if mic.trailingZeros >= SILENCE_JUDGE_SAMPLES || (final && mic.peak <= 0) {
+  // Some devices (conference bars with noise gating) deliver exact zeros between
+  // phrases. Once the microphone has carried sound, only a long silence counts.
+  let limit = mic.peak > 0 ? MICROPHONE_GONE_SAMPLES : SILENCE_JUDGE_SAMPLES
+  if mic.trailingZeros >= limit || (final && mic.peak <= 0) {
     return "Микрофон «\(mic.device)» не даёт сигнала: \(MICROPHONE_PERMISSION)"
   }
   return nil
@@ -1025,7 +1031,9 @@ func runSelfTest() -> Int32 {
   check("mic-no-samples-at-end", microphoneIssue(MicrophoneStatus(device: "x"), final: true)?.contains("устройство не выдало данных") == true)
   check("mic-no-samples-after-10s", microphoneIssue(MicrophoneStatus(device: "x", stalledSeconds: 10), final: false)?.contains("устройство не выдало данных") == true)
   check("mic-audible", microphoneIssue(MicrophoneStatus(device: "x", samples: 160_000, peak: 40), final: true) == nil)
-  check("mic-went-silent-after-sound", microphoneIssue(MicrophoneStatus(device: "x", samples: 960_000, peak: 9000, trailingZeros: 160_000), final: false)?.contains("не даёт сигнала") == true)
+  check("mic-pause-after-sound-is-not-an-issue", microphoneIssue(MicrophoneStatus(device: "x", samples: 960_000, peak: 9000, trailingZeros: 160_000), final: false) == nil)
+  check("mic-pause-at-the-end-is-not-an-issue", microphoneIssue(MicrophoneStatus(device: "x", samples: 960_000, peak: 9000, trailingZeros: 640_000), final: true) == nil)
+  check("mic-went-silent-after-sound", microphoneIssue(MicrophoneStatus(device: "x", samples: 9_600_000, peak: 9000, trailingZeros: 4_800_000), final: false)?.contains("не даёт сигнала") == true)
   check("mic-stopped-after-sound", microphoneIssue(MicrophoneStatus(device: "AirPods", samples: 960_000, peak: 9000, stalledSeconds: 12), final: false)?.hasPrefix("Микрофон «AirPods» перестал выдавать звук 12 с назад: проверьте") == true)
   check("mic-start-failure", microphoneIssue(MicrophoneStatus(device: "x", failure: "AudioDeviceStart → -50"), final: false)?.hasPrefix("Микрофон «x» не запустился: AudioDeviceStart → -50") == true)
 

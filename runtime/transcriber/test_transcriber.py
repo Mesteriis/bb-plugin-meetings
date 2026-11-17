@@ -1267,6 +1267,42 @@ class LocalRecordingTests(unittest.TestCase):
         self.assertAlmostEqual(segments[0]["end"], 3.0, delta=0.15)
         self.assertAlmostEqual(segments[1]["start"], 3.0, delta=0.15)
 
+    def test_local_final_mode_keeps_owner_attribution(self):
+        """The bot-oriented "acoustic" setting must not drop the microphone-based owner label."""
+        self.assertEqual(tr.local_final_mode("acoustic"), "ui+acoustic")
+        self.assertEqual(tr.local_final_mode("ui+acoustic"), "ui+acoustic")
+        self.assertEqual(tr.local_final_mode("ui"), "ui")
+        segments = [{"start": 0.0, "end": 4.0}, {"start": 4.0, "end": 8.0}, {"start": 8.0, "end": 12.0}]
+        coverages = [{"Я": 1.0}, {}, {"Я": 1.0}]
+        labels = [label for _, label, _ in tr.decide_speakers(segments, coverages, [0, 1, 0], tr.local_final_mode("acoustic"))]
+        self.assertEqual(labels, ["Я", "Спикер 1", "Я"])
+
+    def test_cluster_anchored_groups_short_pieces_with_long_ones(self):
+        """Three voices; long pieces are clean, short pieces are noisy. Clustering every piece at the
+        default threshold scatters the short ones; anchoring on the long ones gives three speakers."""
+        rng = np.random.default_rng(7)
+        dim = 32
+        voices = [tr.unit(rng.normal(size=dim)) for _ in range(3)]
+        rows, durations, truth = [], [], []
+        for k, voice in enumerate(voices):
+            for _ in range(5):
+                rows.append(tr.unit(voice + 0.05 * rng.normal(size=dim)))
+                durations.append(6.0)
+                truth.append(k)
+            for _ in range(6):
+                rows.append(tr.unit(voice + 0.22 * rng.normal(size=dim)))
+                durations.append(1.5)
+                truth.append(k)
+        X = np.stack(rows).astype(np.float32)
+        self.assertGreater(int(tr.agglomerative(X, tr.DEFAULT_CLUSTER_THRESHOLD).max()) + 1, 3)
+        labels = tr.cluster_anchored(X, durations)
+        self.assertEqual([int(v) for v in labels], truth)
+
+    def test_cluster_anchored_needs_long_pieces(self):
+        X = np.stack([tr.unit(np.eye(4)[i % 4]) for i in range(6)]).astype(np.float32)
+        self.assertIsNone(tr.cluster_anchored(X, [1.5] * 6))
+        self.assertIsNone(tr.cluster_anchored(X, [4.0, 1.0, 1.0, 1.0, 1.0, 1.0]))
+
     def test_offline_local_twice_identical(self):
         d = self._synthetic_local_meeting()
 

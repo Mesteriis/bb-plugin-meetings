@@ -1134,8 +1134,10 @@ the system audio) locally, then transcribes with the same pipeline.
   * **Issues.** The two paths start independently and a usable recording is
     never discarded. A failed Core Audio step, a start that has not returned
     in 10 s, a stream that delivered nothing, zeros from the system stream
-    while a tapped process was playing, a microphone whose last 10 s are
-    exact zeros or that stopped delivering for 10 s: each becomes
+    while a tapped process was playing, a microphone that has given only
+    exact zeros for 10 s (5 min once it has carried sound: conference bars
+    gate noise to exact zeros between phrases) or that stopped delivering
+    for 10 s: each becomes
     `audioIssue` (reason `capture`) as soon as it is known, naming the
     device or the operation and its OSStatus. Exact zeros from a microphone
     cannot tell a hardware mute from a dead device or a withheld permission,
@@ -1168,7 +1170,11 @@ the system audio) locally, then transcribes with the same pipeline.
   The transcriber cuts a VAD segment where the louder side changes between
   mic.pcm and system.pcm (source_split_offsets; a side must hold 1.2 s),
   attributes microphone-dominant pieces to ownerName (default «Я») and
-  resolves the rest by acoustic clustering. This is an energy heuristic:
+  resolves the rest by voice. The final pass always keeps the owner's label
+  (local_final_mode), whatever the bot-oriented diarization setting says, and
+  finds the remote voices among pieces of 3 s and longer, then gives every
+  piece to the nearest voice (cluster_anchored): on the first real call,
+  clustering every piece made 84 speakers out of six people. This is an energy heuristic:
   overlapping speech goes to the louder side, turns shorter than 1.2 s are
   absorbed by their neighbour, and with no system stream every piece is the
   owner's. With keepRawAudio off, mic.pcm
