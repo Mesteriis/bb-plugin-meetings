@@ -148,6 +148,26 @@ export function isInside(child: string, parent: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+const queues = new Map<string, Promise<unknown>>();
+
+/**
+ * Run tasks that read, change and replace the same file one after another.
+ * An atomic rename keeps the file whole; only this keeps an update from being
+ * lost between another task's read and write. Per host process.
+ */
+export function serialized<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const run = (queues.get(key) ?? Promise.resolve()).then(task, task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  queues.set(key, settled);
+  void settled.then(() => {
+    if (queues.get(key) === settled) queues.delete(key);
+  });
+  return run;
+}
+
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();

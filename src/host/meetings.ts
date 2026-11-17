@@ -33,6 +33,7 @@ import {
   tailLines,
   tmpName,
   writeJsonAtomic,
+  serialized,
 } from "./fsutil.js";
 import { BOT_SCRIPT_NAME, MEETING_FILES as F, TRANSCRIBER_SCRIPT_NAME, meetingDir, type HostPaths } from "./paths.js";
 import { PLAYWRIGHT_CORE } from "./platform.js";
@@ -497,25 +498,31 @@ async function stopTranscriber(dir: string, pid: number): Promise<void> {
 
 /** Record the meeting's calendar roster for the transcriber; false when the meeting has no config yet. */
 export async function setTranscriberRoster(paths: HostPaths, meetingId: string, roster: readonly string[]): Promise<boolean> {
-  const dir = meetingDir(paths, meetingId);
-  const config = await readJson(file(dir, F.config));
-  if (config === null || typeof config !== "object" || Array.isArray(config)) return false;
-  const current = config as Record<string, unknown>;
-  const transcriber = (typeof current.transcriber === "object" && current.transcriber !== null ? current.transcriber : {}) as Record<string, unknown>;
-  await writeJsonAtomic(file(dir, F.config), { ...current, transcriber: { ...transcriber, roster: [...roster] } });
-  return true;
+  return mergeConfigTranscriber(meetingDir(paths, meetingId), { roster: [...roster] });
+}
+
+/**
+ * Merge fields into config.json's transcriber block; false when the meeting has
+ * no valid config. The block keeps what the patch does not name: the meeting's
+ * own engine/language/glossary/ownerName and the calendar roster. One writer at
+ * a time per meeting: the roster arrives from the calendar while the server may
+ * be restarting the transcriber with new settings.
+ */
+export function mergeConfigTranscriber(dir: string, patch: Record<string, unknown>): Promise<boolean> {
+  return serialized(file(dir, F.config), async () => {
+    const config = await readJson(file(dir, F.config));
+    if (config === null || typeof config !== "object" || Array.isArray(config)) return false;
+    const current = config as Record<string, unknown>;
+    const transcriber = (typeof current.transcriber === "object" && current.transcriber !== null ? current.transcriber : {}) as Record<string, unknown>;
+    await writeJsonAtomic(file(dir, F.config), { ...current, transcriber: { ...transcriber, ...patch } });
+    return true;
+  });
 }
 
 async function updateConfigTranscriber(dir: string, transcriber: TranscriberConfig): Promise<void> {
-  const config = await readJson(file(dir, F.config));
-  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+  if (!(await mergeConfigTranscriber(dir, transcriber))) {
     throw new Error(`В каталоге встречи нет корректного config.json: ${dir}`);
   }
-  // Preserve the meeting's own shape and any transcriber fields the server does not know about
-  // (a local recording's engine/language/glossary/ownerName): merge, not replace.
-  const current = config as Record<string, unknown>;
-  const currentTranscriber = (typeof current.transcriber === "object" && current.transcriber !== null ? current.transcriber : {}) as Record<string, unknown>;
-  await writeJsonAtomic(file(dir, F.config), { ...current, transcriber: { ...currentTranscriber, ...transcriber } });
 }
 
 export interface EnsureTranscriberInput {

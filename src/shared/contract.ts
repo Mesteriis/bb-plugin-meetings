@@ -343,6 +343,11 @@ export const hostContract = defineRpcContract({
       })
       .strict(),
   },
+  "voices.retract": {
+    experimental_description: "Take back what a speaker of a meeting taught the known voices (their name was removed).",
+    input: z.object({ meetingId: meetingIdSchema, speakerKey: z.string().min(1).max(300) }).strict(),
+    output: z.object({ retracted: z.boolean() }).strict(),
+  },
   "voices.list": {
     experimental_description: "Known voices, without their embeddings.",
     input: z.object({}).strict(),

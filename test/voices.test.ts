@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { decodeEmbedding, encodeEmbedding, forgetVoice, learnVoice, listVoices, mergeVoice, speakerCentroid } from "../src/host/voices.js";
+import { decodeEmbedding, encodeEmbedding, forgetVoice, learnVoice, listVoices, mergeVoice, retractVoice, speakerCentroid } from "../src/host/voices.js";
 import { hostPaths } from "../src/host/paths.js";
 
 const vec = (...values: number[]) => Float32Array.from(values);
@@ -49,24 +49,32 @@ describe("speakerCentroid", () => {
 
 describe("mergeVoice", () => {
   it("starts a voice from its first sample", () => {
-    expect(mergeVoice(null, "Анна", { vector: vec(1, 0), seconds: 40 }, 1000)).toEqual({
+    expect(mergeVoice(null, "Анна", { meeting: "m1", vector: vec(1, 0), seconds: 40 }, 1000)).toEqual({
       name: "Анна", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, meetings: 1, updatedAt: 1000, roster: [],
+      samples: [{ meeting: "m1", embedding: encodeEmbedding(vec(1, 0)), seconds: 40, at: 1000 }],
     });
   });
 
   it("averages a new sample in by the amount of speech", () => {
-    const first = mergeVoice(null, "Анна", { vector: vec(1, 0), seconds: 30 }, 1000);
-    const merged = mergeVoice(first, "Анна", { vector: vec(0, 1), seconds: 10 }, 2000);
+    const first = mergeVoice(null, "Анна", { meeting: "m1", vector: vec(1, 0), seconds: 30 }, 1000);
+    const merged = mergeVoice(first, "Анна", { meeting: "m2", vector: vec(0, 1), seconds: 10 }, 2000);
     expect(rounded(decodeEmbedding(merged.embedding)!)).toEqual([0.949, 0.316]);
     expect({ seconds: merged.seconds, meetings: merged.meetings, updatedAt: merged.updatedAt }).toEqual({ seconds: 40, meetings: 2, updatedAt: 2000 });
+  });
+
+  it("replaces the sample of a meeting it already learned from instead of counting it twice", () => {
+    const first = mergeVoice(null, "Анна", { meeting: "m1", vector: vec(1, 0), seconds: 30 }, 1000);
+    const again = mergeVoice(first, "Анна", { meeting: "m1", vector: vec(0, 1), seconds: 20 }, 2000);
+    expect(rounded(decodeEmbedding(again.embedding)!)).toEqual([0, 1]);
+    expect({ seconds: again.seconds, meetings: again.meetings }).toEqual({ seconds: 20, meetings: 1 });
   });
 });
 
 describe("mergeVoice roster", () => {
   it("remembers who was invited to the meetings a voice was learned in", () => {
-    const first = mergeVoice(null, "Анна", { vector: vec(1, 0), seconds: 30 }, 1000, ["a@x.io", "b@x.io"]);
+    const first = mergeVoice(null, "Анна", { meeting: "m1", vector: vec(1, 0), seconds: 30 }, 1000, ["a@x.io", "b@x.io"]);
     expect(first.roster).toEqual(["a@x.io", "b@x.io"]);
-    expect(mergeVoice(first, "Анна", { vector: vec(1, 0), seconds: 10 }, 2000, ["b@x.io", "c@x.io"]).roster).toEqual(["a@x.io", "b@x.io", "c@x.io"]);
+    expect(mergeVoice(first, "Анна", { meeting: "m2", vector: vec(1, 0), seconds: 10 }, 2000, ["b@x.io", "c@x.io"]).roster).toEqual(["a@x.io", "b@x.io", "c@x.io"]);
   });
 });
 
@@ -104,6 +112,47 @@ describe("learnVoice, listVoices, forgetVoice", () => {
     await fs.rm(path.join(paths.meetings, meetingId, "embeddings.jsonl"));
     expect(await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 1)).toEqual({ learned: false, reason: "no_voice", seconds: 0 });
     expect(await listVoices(paths)).toEqual([]);
+  });
+
+  it("keeps every voice when several speakers are named at once", async () => {
+    const paths = hostPaths(root);
+    const dir = path.join(paths.meetings, meetingId);
+    await fs.writeFile(path.join(dir, "transcript.json"), JSON.stringify({
+      segments: [
+        { id: 0, start: 0, end: 12, speakerKey: "spk:1" },
+        { id: 1, start: 12, end: 30, speakerKey: "spk:2" },
+      ],
+    }));
+    await Promise.all([
+      learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 1),
+      learnVoice(paths, { meetingId, speakerKey: "spk:2", name: "Борис" }, 2),
+    ]);
+    expect((await listVoices(paths)).map((voice) => voice.name).sort()).toEqual(["Анна", "Борис"]);
+    // A forget and a learn that overlap both take effect.
+    await Promise.all([forgetVoice(paths, "Анна"), learnVoice(paths, { meetingId, speakerKey: "spk:2", name: "Борис" }, 3)]);
+    expect((await listVoices(paths)).map((voice) => voice.name)).toEqual(["Борис"]);
+  });
+
+  it("counts a repeated rename once and moves the sample when the name is corrected", async () => {
+    const paths = hostPaths(root);
+    await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 1);
+    await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 2);
+    expect(await listVoices(paths)).toEqual([{ name: "Анна", seconds: 12, meetings: 1, updatedAt: 2 }]);
+    await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Борис" }, 3);
+    expect(await listVoices(paths)).toEqual([{ name: "Борис", seconds: 12, meetings: 1, updatedAt: 3 }]);
+  });
+
+  it("takes a speaker's sample back when the name is removed, keeping what other meetings taught", async () => {
+    const paths = hostPaths(root);
+    await fs.writeFile(path.join(root, "voices.json"), JSON.stringify({
+      version: 1,
+      voices: [{ name: "Анна", embedding: encodeEmbedding(vec(1, 0)), seconds: 50, meetings: 1, updatedAt: 1 }],
+    }));
+    await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 2);
+    expect(await listVoices(paths)).toEqual([{ name: "Анна", seconds: 62, meetings: 2, updatedAt: 2 }]);
+    expect(await retractVoice(paths, { meetingId, speakerKey: "spk:1" }, 3)).toBe(true);
+    expect(await listVoices(paths)).toEqual([{ name: "Анна", seconds: 50, meetings: 1, updatedAt: 3 }]);
+    expect(await retractVoice(paths, { meetingId, speakerKey: "spk:1" }, 4)).toBe(false);
   });
 
   it("forgets a voice by name", async () => {

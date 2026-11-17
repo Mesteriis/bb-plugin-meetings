@@ -1113,6 +1113,10 @@ def cluster_embeddings(X, durations, threshold):
 ANCHOR_MIN_S = 3.0  # pieces at least this long define the voices of a local recording
 ANCHOR_THRESHOLD = 0.5  # similarity at which two groups of long pieces are one voice
 ANCHOR_SPEAKER_S = 10.0  # a group of long pieces this long in total is a speaker
+# A piece less similar than this to every voice belongs to none of them. On four real
+# calls 1-2 % of the pieces under 3 s fell below it and no piece of 3 s or longer did.
+ANCHOR_ATTACH = 0.3
+STRANGER = -1  # the cluster of a piece that is unlike every voice of the recording
 
 
 def cluster_anchored(X, durations, threshold=ANCHOR_THRESHOLD):
@@ -1120,10 +1124,12 @@ def cluster_anchored(X, durations, threshold=ANCHOR_THRESHOLD):
     recording's remote side). An embedding of a 1-2 s piece is too noisy to
     cluster: at the default threshold every other short piece becomes its own
     "speaker". So the voices are found among the long pieces only, and every
-    piece then goes to the voice it is most similar to.
+    piece then goes to the voice it is most similar to. A piece unlike all of
+    them (someone who said too little to be a voice) gets STRANGER: it is nobody
+    in particular, never another person and never the owner by voice.
 
-    Returns a label per row, numbered by first appearance, or None when there
-    are too few long pieces to find a voice (the caller clusters as before).
+    Returns a label per row, voices numbered by first appearance, or None when
+    there are too few long pieces to find a voice (the caller clusters as before).
     """
     durations = np.asarray(durations, dtype=np.float32)
     anchors = np.flatnonzero(durations >= ANCHOR_MIN_S)
@@ -1138,11 +1144,14 @@ def cluster_anchored(X, durations, threshold=ANCHOR_THRESHOLD):
             centroids.append(unit(X[rows].mean(axis=0)))
     if not centroids:
         return None
-    nearest = np.argmax(X @ np.stack(centroids).T, axis=1)
+    sims = X @ np.stack(centroids).T
+    nearest = np.argmax(sims, axis=1)
+    attached = sims[np.arange(len(nearest)), nearest] >= ANCHOR_ATTACH
     order = {}
-    for lab in nearest:
-        order.setdefault(int(lab), len(order))
-    return np.array([order[int(lab)] for lab in nearest], dtype=int)
+    for lab, ok in zip(nearest, attached):
+        if ok:
+            order.setdefault(int(lab), len(order))
+    return np.array([order[int(lab)] if ok else STRANGER for lab, ok in zip(nearest, attached)], dtype=int)
 
 
 VOICE_MATCH_THRESHOLD = 0.65  # a cluster this similar to a known voice is that person
@@ -1179,7 +1188,7 @@ def cluster_centroids(X, durations, labels):
     w = np.asarray(durations, dtype=np.float32)
     labels = np.asarray(labels)
     out = {}
-    for c in sorted(set(int(v) for v in labels)):
+    for c in sorted(set(int(v) for v in labels) - {STRANGER}):
         rows = labels == c
         out[c] = (unit((X[rows] * w[rows][:, None]).sum(axis=0)), float(w[rows].sum()))
     return out
@@ -1233,7 +1242,8 @@ def owner_coverage(mic_loud, clusters, durations):
     """Which pieces of a local recording are the owner's, per piece.
 
     mic_loud: the microphone was louder than the system audio during the piece;
-    clusters: the piece's voice, None without an embedding; durations: seconds.
+    clusters: the piece's voice, None without an embedding, STRANGER when it is
+    unlike every voice; durations: seconds.
 
     The microphone alone is not proof: with speakers instead of headphones the
     remote side reaches it too, and on the first calls a remote voice with two
@@ -1244,13 +1254,14 @@ def owner_coverage(mic_loud, clusters, durations):
     """
     mic = collections.defaultdict(float)
     total = collections.defaultdict(float)
+    voiceless = (None, STRANGER)
     for loud, c, d in zip(mic_loud, clusters, durations):
-        if c is not None:
+        if c not in voiceless:
             total[c] += d
             if loud:
                 mic[c] += d
     owners = {c for c in total if mic[c] > OWNER_VOICE_SHARE * total[c]}
-    return [(c in owners) if c is not None else bool(loud) for loud, c in zip(mic_loud, clusters)]
+    return [(c in owners) if c not in voiceless else bool(loud) for loud, c in zip(mic_loud, clusters)]
 
 
 def local_final_mode(effective):
@@ -1271,7 +1282,8 @@ def decide_speakers(segments, coverages, own_clusters, mode, voice_names=None):
     """Final (speakerKey, speaker, source) per segment (DESIGN §5).
 
     segments: [{start, end}] in time order; coverages: [{name: share}];
-    own_clusters: cluster id per segment, None when it has no embedding;
+    own_clusters: cluster id per segment, None when it has no embedding,
+    STRANGER when its voice is unlike every cluster (it stays unknown);
     voice_names: {cluster: name} of clusters recognized as a known voice; it
     names a cluster only where it would otherwise be "Спикер N".
     """
@@ -1290,7 +1302,7 @@ def decide_speakers(segments, coverages, own_clusters, mode, voice_names=None):
     if mode == "ui+acoustic":
         votes = collections.defaultdict(lambda: collections.defaultdict(float))
         for seg, (name, share), c in zip(segments, dom, own_clusters):
-            if c is not None and name is not None and share >= UI_CONFIDENT_COVERAGE:
+            if c is not None and c != STRANGER and name is not None and share >= UI_CONFIDENT_COVERAGE:
                 votes[c][name] += max(0.0, seg["end"] - seg["start"])
         for c, v in votes.items():
             total = sum(v.values())
@@ -1304,15 +1316,19 @@ def decide_speakers(segments, coverages, own_clusters, mode, voice_names=None):
 
     numbers = {}
 
-    def acoustic(c):
+    unknown = (UNKNOWN_KEY, UNKNOWN_LABEL, "none")
+
+    def acoustic(c, inherited=False):
+        if c == STRANGER:
+            return unknown
         if c in voice_names:
-            return f"voice:{voice_names[c]}", voice_names[c], "voice"
+            # A piece without an embedding was never compared with the voice: it only follows it.
+            return f"voice:{voice_names[c]}", voice_names[c], "mixed" if inherited else "voice"
         if c not in numbers:
             numbers[c] = len(numbers) + 1
         k = numbers[c]
         return f"spk:{k}", f"Спикер {k}", "acoustic"
 
-    unknown = (UNKNOWN_KEY, UNKNOWN_LABEL, "none")
     out = []
     for i in range(n):
         name, share = dom[i]
@@ -1328,7 +1344,7 @@ def decide_speakers(segments, coverages, own_clusters, mode, voice_names=None):
         elif c is not None and c in impure and name:
             out.append(ui_speaker(name))
         elif c is not None:
-            out.append(acoustic(c))
+            out.append(acoustic(c, inherited=own_clusters[i] is None))
         elif name:
             out.append(ui_speaker(name))
         else:
@@ -2045,7 +2061,8 @@ class Transcriber:
                     labels = cluster_embeddings(X, durations, threshold)
                 for i, lab in zip(idx, labels):
                     own_clusters[i] = int(lab)
-                log(f"clustering: {len(idx)} embeddings -> {int(labels.max()) + 1} cluster(s) at {threshold}")
+                log(f"clustering: {len(idx)} embeddings -> {int(labels.max()) + 1} cluster(s) at {threshold}, "
+                    f"{int((np.asarray(labels) == STRANGER).sum())} piece(s) unlike all of them")
                 if self.recognize_voices and self.host_data:
                     voice_names = match_voices(cluster_centroids(X, durations, labels),
                                                load_voices(os.path.join(self.host_data, "voices.json")),

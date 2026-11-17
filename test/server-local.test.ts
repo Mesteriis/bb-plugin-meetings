@@ -251,6 +251,25 @@ describe("local recording auto-record", () => {
     loaded.service.renameSpeaker(id, "spk:1", "Анна");
     await loaded.service.voicesSettled();
     expect(loaded.fake.voiceLearnCalls).toEqual([{ meetingId: id, speakerKey: "spk:1", name: "Анна", roster: ["a.smirnova@x.io", "b.orlov@x.io"] }]);
+    // Removing the name takes the voice sample back.
+    loaded.service.renameSpeaker(id, "spk:1", "");
+    await loaded.service.voicesSettled();
+    expect(loaded.fake.voiceRetractCalls).toEqual([{ meetingId: id, speakerKey: "spk:1" }]);
+    // The owner's own name on a numbered speaker is not offered to the naming agent again.
+    loaded.service.renameSpeaker(id, "spk:1", "Вера");
+    (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown } }).repo.updateMeeting(id, { transcriptFinal: true });
+    expect(loaded.service.namingPrompt(id)).toContain("Уже названы, не переименовывай: «Вера» (spk:1).");
+  });
+
+  it("leaves the stored roster alone when the meeting has no calendar invitees", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const row = loaded.service.list("all", 50, null).meetings[0]!;
+    const full = (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): object } }).repo.updateMeeting(row.id, {});
+    expect(loaded.service.transcriberConfigFor(full as never, { ...macSettings(), diarization: "ui+acoustic", speakerLagMs: 700, keepRawAudio: false } as never, null)).not.toHaveProperty("roster");
   });
 
   it("names a local recording after the calendar event it belongs to", async () => {
