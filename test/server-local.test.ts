@@ -13,6 +13,7 @@ function macSettings() {
     localStartThresholdSec: 5,
     localGraceSec: 60,
     localOwnerName: "Я",
+    localCalendarTitles: true,
     localEngine: "whisper",
     localLanguage: "ru",
     localGlossary: "",
@@ -173,6 +174,36 @@ describe("local recording auto-record", () => {
       loaded.fake.localPollResult = { supported: true, detected: [], started: [], ended: [], error: null };
       await loaded.service.tick();
       expect(loaded.fake.ensureCalls.map((call) => ({ mode: call.mode }))).toEqual(expected);
+    }
+  });
+
+  it("names a local recording after the calendar event it belongs to", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.calendarLookup = { access: "granted", title: "Созвон с заказчиком", attendees: ["Анна"] };
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    expect(hostCalls(loaded.harness, "local.calendarEvent").map((call) => call.input)).toEqual([{ appKey: "zoom", at: T0 }]);
+    expect(loaded.service.list("all", 50, null).meetings.map((m) => m.title)).toEqual(["Созвон с заказчиком"]);
+  });
+
+  it("keeps the default title when no event fits, access is refused, the lookup fails or the setting is off", async () => {
+    const cases = [
+      { lookup: { access: "granted", title: null, attendees: [] }, setting: true, calls: 1 },
+      { lookup: { access: "denied", title: null, attendees: [] }, setting: true, calls: 1 },
+      { lookup: "throw", setting: true, calls: 1 },
+      { lookup: { access: "granted", title: "Созвон с заказчиком", attendees: [] }, setting: false, calls: 0 },
+    ] as const;
+    for (const { lookup, setting, calls } of cases) {
+      const loaded = await load({ settings: { ...macSettings(), localCalendarTitles: setting }, now: () => T0 });
+      loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+      loaded.fake.calendarLookup = lookup;
+      loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+      await loaded.service.pollLocalDetection();
+      await loaded.service.localTitlesSettled();
+      expect(hostCalls(loaded.harness, "local.calendarEvent")).toHaveLength(calls);
+      expect(loaded.service.list("all", 50, null).meetings.map((m) => m.title)).toEqual(["Zoom — локальная запись"]);
     }
   });
 

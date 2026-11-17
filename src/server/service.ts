@@ -139,6 +139,8 @@ export class MeetingsService {
   private startLock: Promise<unknown> = Promise.resolve();
   /** Meetings whose meeting.start call is in flight (their directory may not exist yet). */
   private readonly starting = new Set<string>();
+  /** Calendar title lookups under way for local recordings. */
+  private readonly titleLookups = new Set<Promise<void>>();
   /** Settles once an in-flight start has recorded its outcome (a stop waits for it). */
   private readonly startSettled = new Map<string, Promise<void>>();
   /** Joins whose caller is waiting and reports a failure itself (no thread message). */
@@ -1188,6 +1190,7 @@ export class MeetingsService {
       );
       this.repo.updateMeeting(id, { hostId, startedAt: now });
       await this.withLock(id, () => this.applySnapshot(this.requireMeeting(id), snapshot, signal));
+      if (settings.localCalendarTitles) this.nameFromCalendar(id, appKey, hostId, now);
     } catch (error) {
       this.bb.log.warn(`Could not start local recording for ${appKey}: ${errorMessage(error)}`);
       this.repo.updateMeeting(id, { status: "failed", statusDetail: "Не удалось начать локальную запись", errorCode: "unknown", errorMessage: errorMessage(error), endedAt: this.now() });
@@ -1197,6 +1200,34 @@ export class MeetingsService {
       settle();
     }
     this.wake();
+  }
+
+  /**
+   * Name a local recording after the calendar event it belongs to. In the
+   * background: the first lookup can wait on the owner answering macOS's
+   * calendar prompt, and the recording must not wait for a title.
+   */
+  private nameFromCalendar(id: string, appKey: string, hostId: string, at: number): void {
+    const defaultTitle = this.requireMeeting(id).title;
+    const task = this.call("local.calendarEvent", { appKey, at }, { hostId, timeoutMs: 40_000 })
+      .then((found) => {
+        if (found.access !== "granted") {
+          this.bb.log.warn(`No calendar title for ${id}: calendar access is ${found.access}`);
+          return;
+        }
+        // Not over a title the owner has typed meanwhile.
+        if (found.title === null || this.repo.getMeeting(id)?.title !== defaultTitle) return;
+        this.repo.updateMeeting(id, { title: found.title.slice(0, 200) });
+        this.publishMeeting(id);
+      })
+      .catch((error: unknown) => this.bb.log.warn(`No calendar title for ${id}: ${errorMessage(error)}`))
+      .finally(() => this.titleLookups.delete(task));
+    this.titleLookups.add(task);
+  }
+
+  /** Test hook: resolves when the calendar title lookups under way have finished. */
+  async localTitlesSettled(): Promise<void> {
+    await Promise.all([...this.titleLookups]);
   }
 
   private async stopLocalRecording(appKey: string): Promise<void> {

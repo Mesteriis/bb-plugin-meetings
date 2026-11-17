@@ -1149,6 +1149,19 @@ the system audio) locally, then transcribes with the same pipeline.
     cancelled and undoes itself if it returns. `capture selftest` checks the
     mixer, the clock, the issue rules, the microphone choice and its restart
     rules (test/capture-selftest.test.ts).
+* **Title.** With localCalendarTitles on (default), the server asks the host
+  for `local.calendarEvent` right after `local.start`, in the background.
+  The helper's `events --from --to` reads the macOS system calendar through
+  EventKit (NSCalendarsFullAccessUsageDescription; it waits up to 20 s for
+  the first access prompt) and returns title, times, all-day and declined
+  flags, attendee names and, of the event's location, URL and notes, only
+  the host and path of the links. src/host/local-calendar.ts picks the event:
+  not all-day, not declined, with a title, going on now (from 15 min before
+  its start to 5 min after its end); one whose link is for the recording's
+  app wins, else the one that started closest to now. The row's title is
+  replaced only while it is still the default one. Verified: the helper
+  read the owner's calendar and found the event of a call in progress. Not
+  verified: the access prompt when BB launches the helper.
 * **File contract.** Local recordings reuse the meeting directory: config.json
   carries platform "local", sourceApp, sourceLabel, ownerName and the
   transcriber block (including engine, language, glossary, whisperModel).

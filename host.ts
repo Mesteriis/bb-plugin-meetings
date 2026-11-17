@@ -31,6 +31,7 @@ import {
   statusMany,
   stopMeeting,
 } from "./src/host/meetings.js";
+import { lookupCalendarEvent } from "./src/host/local-calendar.js";
 import { localPoll, startLocalMeeting } from "./src/host/local-recording.js";
 import { hostPaths, type HostPaths } from "./src/host/paths.js";
 import { cancelSetups, startSetup } from "./src/host/setup.js";
@@ -141,6 +142,7 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
   "local.poll": async ({ startThresholdMs, graceMs, apps, recording }, context) =>
     localPoll(pathsFor(context.experimental_paths.dataDir), { startThresholdMs, graceMs, apps, recording }),
 
+  "local.calendarEvent": async ({ appKey, at }, context) => lookupCalendarEvent(pathsFor(context.experimental_paths.dataDir), appKey, at),
   "local.start": async (input, context) => startLocalMeeting(pathsFor(context.experimental_paths.dataDir), input),
 };
 

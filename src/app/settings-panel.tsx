@@ -84,6 +84,7 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {boolean("localRecordingEnabled", "Включить локальную запись")}
             {boolean("localAutoRecord", "Начинать запись автоматически")}
+            {boolean("localCalendarTitles", "Название встречи из календаря macOS")}
             {number("localStartThresholdSec", "Порог начала, с", 1, 300)}
             {number("localGraceSec", "Остановить после тишины, с", 5, 3600)}
             <Field label="Микрофон" hint="С него записывается ваш голос. Звук собеседников берётся прямо из приложения встречи и от микрофона и наушников не зависит.">

@@ -5,6 +5,7 @@
 //
 //   detect                     print one JSON array of audio client processes
 //   devices                    print one JSON array of input devices (name, isDefault)
+//   events --from ms --to ms   print the system calendar's events in that window
 //   record --meeting-dir <dir> [--bundle-ids id,id,...]  record mic + system audio
 //
 // Files: audio.pcm (s16le 16 kHz mono, mic + system mixed, what the transcriber
@@ -14,6 +15,7 @@
 import AVFoundation
 import CoreAudio
 import Darwin
+import EventKit
 import Foundation
 
 let SAMPLE_RATE = 16_000
@@ -1312,6 +1314,62 @@ func runRecord(_ meetingDir: String, _ bundleIds: [String], inputDevice: String?
   _exit(0)
 }
 
+// ── calendar (meeting titles) ───────────────────────────────────────────
+
+/// Links found in an event's location, URL and notes: enough to tell which
+/// meeting service the event is for, without handing the notes themselves over.
+func eventLinks(_ event: EKEvent) -> [String] {
+  let text = [event.location, event.url?.absoluteString, event.notes].compactMap { $0 }.joined(separator: " ")
+  guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
+  var links: [String] = []
+  for match in detector.matches(in: text, options: [], range: NSRange(text.startIndex..., in: text)) {
+    guard let url = match.url, url.scheme == "http" || url.scheme == "https", let host = url.host else { continue }
+    // Host and path only: meeting passcodes live in the query.
+    let link = host + url.path
+    if !links.contains(link) { links.append(link) }
+    if links.count == 20 { break }
+  }
+  return links
+}
+
+/// `events --from <ms> --to <ms>`: the system calendar's events in that window,
+/// for naming a recording after the meeting it belongs to. Asks for calendar
+/// access the first time; prints {"access": "granted"|"denied"|"timeout", "events": [...]}.
+func runEvents(from: Double, to: Double) {
+  let store = EKEventStore()
+  let answered = DispatchSemaphore(value: 0)
+  var granted = false
+  store.requestFullAccessToEvents { ok, _ in
+    granted = ok
+    answered.signal()
+  }
+  var access = "granted"
+  if answered.wait(timeout: .now() + 20) == .timedOut {
+    access = "timeout"
+  } else if !granted {
+    access = "denied"
+  }
+  var rows: [[String: Any]] = []
+  if access == "granted" {
+    let predicate = store.predicateForEvents(withStart: Date(timeIntervalSince1970: from / 1000),
+                                             end: Date(timeIntervalSince1970: to / 1000), calendars: nil)
+    for event in store.events(matching: predicate) {
+      rows.append([
+        "title": event.title ?? "",
+        "start": Int64(event.startDate.timeIntervalSince1970 * 1000),
+        "end": Int64(event.endDate.timeIntervalSince1970 * 1000),
+        "allDay": event.isAllDay,
+        "declined": event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .declined } ?? false,
+        "links": eventLinks(event),
+        "attendees": (event.attendees ?? []).filter { !$0.isCurrentUser }.compactMap { $0.name }.prefix(50).map { $0 },
+      ])
+    }
+  }
+  let object: [String: Any] = ["access": access, "events": rows]
+  let data = (try? JSONSerialization.data(withJSONObject: object, options: [])) ?? Data("{}".utf8)
+  print(String(data: data, encoding: .utf8) ?? "{}")
+}
+
 // ── main ────────────────────────────────────────────────────────────────
 
 let arguments = CommandLine.arguments
@@ -1321,6 +1379,16 @@ if arguments.count >= 2 && arguments[1] == "selftest" {
   runDetect()
 } else if arguments.count >= 2 && arguments[1] == "devices" {
   runDevices()
+} else if arguments.count >= 2 && arguments[1] == "events" {
+  func number(_ flag: String) -> Double? {
+    guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+    return Double(arguments[index + 1])
+  }
+  guard let from = number("--from"), let to = number("--to"), to > from else {
+    FileHandle.standardError.write(("usage: capture events --from <epoch ms> --to <epoch ms>" + NL).data(using: .utf8)!)
+    exit(2)
+  }
+  runEvents(from: from, to: to)
 } else if arguments.count >= 2 && arguments[1] == "record" {
   var meetingDir = FileManager.default.currentDirectoryPath
   var bundleIds: [String] = []
@@ -1337,6 +1405,6 @@ if arguments.count >= 2 && arguments[1] == "selftest" {
   }
   runRecord(meetingDir, bundleIds, inputDevice: inputDevice)
 } else {
-  FileHandle.standardError.write(("usage: capture detect | devices | selftest | record --meeting-dir <dir> [--bundle-ids ids] [--input-device name]" + NL).data(using: .utf8)!)
+  FileHandle.standardError.write(("usage: capture detect | devices | events --from ms --to ms | selftest | record --meeting-dir <dir> [--bundle-ids ids] [--input-device name]" + NL).data(using: .utf8)!)
   exit(2)
 }
