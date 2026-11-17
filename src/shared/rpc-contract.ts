@@ -480,6 +480,10 @@ export const rpcContract = defineRpcContract({
   },
   "google.sync": { input: z.null(), output: googleStatusSchema },
   "google.disconnect": { input: z.null(), output: googleStatusSchema },
+  "meetings.namingPrompt": {
+    input: z.object({ id: meetingIdSchema }).strict(),
+    output: z.object({ prompt: z.string() }).strict(),
+  },
   "voices.list": {
     input: z.object({}).strict(),
     output: z

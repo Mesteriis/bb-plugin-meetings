@@ -155,6 +155,17 @@ describe("expanded meeting features", () => {
     slot.lifecycle.unmount();
   });
 
+  it("offers to name the speakers from the transcript and prepares the agent request for this meeting", async () => {
+    const slot = await page(MEETING_ID, handlers({ "meetings.namingPrompt": () => ({ prompt: "Определи, кто есть кто во встрече «Обсуждение сроков»." }) }));
+    fireEvent.click(await screen.findByRole("button", { name: "Определить имена по расшифровке" }));
+    await screen.findByText(/Агент прочитает расшифровку и назовёт тех, чьё имя из неё ясно/);
+    expect(calls(slot, "meetings.namingPrompt")).toEqual([{ id: MEETING_ID }]);
+    expect(screen.queryByRole("button", { name: "Определить имена по расшифровке" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(screen.getByRole("button", { name: "Определить имена по расшифровке" })).toBeTruthy();
+    slot.lifecycle.unmount();
+  });
+
   it("shows an agent request without presenting it as a generated analysis", async () => {
     let saved: MeetingAnalysis | null = null;
     const slot = await page(MEETING_ID, handlers({ "meetings.analysis": () => ({ analysis: saved, mode: "agent", templateId: "executive", templates, prompt: null }), "meetings.analyze": () => ({ analysis: null, needsAgent: true, prompt: "Прочитай всю встречу и сохрани результат" }) }));
