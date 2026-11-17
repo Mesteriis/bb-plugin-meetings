@@ -1,6 +1,6 @@
 // Speakers of a meeting: identity color, talk time and share, inline rename
 // (meetings.renameSpeaker; an empty name restores the transcriber's label).
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { formatDuration, formatPercent } from "./format";
@@ -16,12 +16,15 @@ function SpeakerRow({
   stat,
   color,
   share,
+  suggestion,
   onRenamed,
 }: {
   meetingId: string;
   stat: SpeakerStat;
   color: string;
   share: number;
+  /** A known voice this speaker resembles; the owner confirms or ignores it. */
+  suggestion?: string;
   onRenamed: () => void;
 }) {
   const rpc = useMeetingsRpc();
@@ -71,6 +74,14 @@ function SpeakerRow({
                 было: {stat.originalLabel}
               </p>
             ) : null}
+            {suggestion !== undefined && !renamed ? (
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="min-w-0 truncate">Похоже на «{suggestion}»</span>
+                <Button type="button" variant="outline" size="sm" className="h-6 shrink-0 px-2 text-xs" disabled={rename.pending} onClick={() => void rename.run(suggestion)}>
+                  Да, это {suggestion}
+                </Button>
+              </p>
+            ) : null}
           </div>
         )}
       </div>
@@ -102,6 +113,26 @@ export const SpeakersPanel = memo(function SpeakersPanel({
   onRenamed: () => void;
 }) {
   const total = stats.reduce((sum, stat) => sum + stat.talkSec, 0);
+  const rpc = useMeetingsRpc();
+  const [suggestions, setSuggestions] = useState<ReadonlyMap<string, string>>(new Map());
+  // Asked again when the set of speakers or their names change: a confirmed name frees or takes a voice.
+  const signature = stats.map((stat) => `${stat.key}=${stat.label}`).join("|");
+  useEffect(() => {
+    let current = true;
+    if (signature === "") return;
+    rpc
+      .call("meetings.voiceSuggestions", { id: meetingId })
+      .then((result) => {
+        if (current) setSuggestions(new Map(result.suggestions.map((suggestion) => [suggestion.speakerKey, suggestion.name])));
+      })
+      .catch(() => {
+        // A guess is optional: without it the panel is what it was.
+        if (current) setSuggestions(new Map());
+      });
+    return () => {
+      current = false;
+    };
+  }, [rpc, meetingId, signature]);
   return (
     <Section title="Спикеры" count={stats.length === 0 ? undefined : stats.length}>
       {stats.length === 0 ? (
@@ -115,6 +146,7 @@ export const SpeakersPanel = memo(function SpeakersPanel({
               stat={stat}
               color={colorFor(colors, stat.key)}
               share={total > 0 ? stat.talkSec / total : 0}
+              suggestion={suggestions.get(stat.key)}
               onRenamed={onRenamed}
             />
           ))}

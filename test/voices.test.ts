@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { decodeEmbedding, encodeEmbedding, forgetVoice, learnVoice, listVoices, mergeVoice, retractVoice, speakerCentroid } from "../src/host/voices.js";
+import { decodeEmbedding, encodeEmbedding, forgetVoice, learnVoice, listVoices, mergeVoice, retractVoice, speakerCentroid, suggestVoices } from "../src/host/voices.js";
 import { hostPaths } from "../src/host/paths.js";
 
 const vec = (...values: number[]) => Float32Array.from(values);
@@ -190,6 +190,23 @@ describe("learnVoice, listVoices, forgetVoice", () => {
       { name: "Анна", seconds: 12, meetings: 1, updatedAt: 3 },
       { name: "Борис", seconds: 20, meetings: 1, updatedAt: 3 },
     ]);
+  });
+
+  it("suggests a known voice for a speaker it resembles but did not clearly match", async () => {
+    const paths = hostPaths(root);
+    // Анна's voice is 0.6 similar to spk:1 (vector (1, 0)); Вера's is nothing like it.
+    await fs.writeFile(path.join(root, "voices.json"), JSON.stringify({
+      version: 1,
+      voices: [
+        { name: "Анна", embedding: encodeEmbedding(vec(0.6, 0.8)), seconds: 50, meetings: 1, updatedAt: 1 },
+        { name: "Вера", embedding: encodeEmbedding(vec(-1, 0)), seconds: 50, meetings: 1, updatedAt: 1 },
+      ],
+    }));
+    expect(await suggestVoices(paths, { meetingId, speakerKeys: ["spk:1", "spk:2", "spk:9"], taken: [] })).toEqual([
+      { speakerKey: "spk:1", name: "Анна", similarity: 0.6 },
+    ]);
+    // Not a name that someone in this meeting already has.
+    expect(await suggestVoices(paths, { meetingId, speakerKeys: ["spk:1"], taken: ["Анна"] })).toEqual([]);
   });
 
   it("forgets a voice by name", async () => {

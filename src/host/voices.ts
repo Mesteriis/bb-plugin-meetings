@@ -321,3 +321,41 @@ export function forgetVoice(paths: HostPaths, name: string): Promise<boolean> {
     return kept.length === voices.length ? { result: false } : { voices: kept, result: true };
   });
 }
+
+/** A known voice this similar to an unnamed speaker is offered to the owner as a guess. */
+export const VOICE_SUGGEST_SIMILARITY = 0.5;
+/** ...when it is this much closer than the next known voice. */
+const VOICE_SUGGEST_MARGIN = 0.05;
+
+export interface VoiceSuggestion {
+  readonly speakerKey: string;
+  readonly name: string;
+  readonly similarity: number;
+}
+
+/**
+ * For speakers the transcriber left unnamed: the known voice each resembles.
+ * Below the transcriber's own threshold a match is a question, not an answer
+ * (another person's voice reached 0.57 on real calls), so the owner confirms.
+ * `taken` are names somebody in the meeting already has.
+ */
+export async function suggestVoices(
+  paths: HostPaths,
+  input: { readonly meetingId: string; readonly speakerKeys: readonly string[]; readonly taken: readonly string[] },
+): Promise<VoiceSuggestion[]> {
+  const voices = (await readVoices(paths))
+    .filter((voice) => !input.taken.includes(voice.name))
+    .map((voice) => ({ name: voice.name, vector: decodeEmbedding(voice.embedding)! }));
+  const best = new Map<string, VoiceSuggestion>();
+  for (const speakerKey of input.speakerKeys) {
+    const centroid = await meetingSpeaker(paths, input.meetingId, speakerKey);
+    if (centroid === null || centroid.seconds < VOICE_MIN_LEARN_S) continue;
+    const ranked = voices.map((voice) => ({ name: voice.name, similarity: similarity(voice.vector, centroid.vector) })).sort((a, b) => b.similarity - a.similarity);
+    const top = ranked[0];
+    if (top === undefined || top.similarity < VOICE_SUGGEST_SIMILARITY || top.similarity - (ranked[1]?.similarity ?? -1) < VOICE_SUGGEST_MARGIN) continue;
+    const held = best.get(top.name);
+    // A voice is offered to the speaker closest to it only.
+    if (held === undefined || top.similarity > held.similarity) best.set(top.name, { speakerKey, name: top.name, similarity: Math.round(top.similarity * 100) / 100 });
+  }
+  return input.speakerKeys.flatMap((key) => [...best.values()].filter((suggestion) => suggestion.speakerKey === key));
+}
