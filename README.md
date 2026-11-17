@@ -152,6 +152,7 @@ The `diarization` setting picks the mode: `ui+acoustic` (default), `ui` (Zoom si
 | `meetings_search` | Full-text search across all transcripts |
 | `meetings_save_summary` | Save a Markdown summary to the meeting card |
 | `meetings_rename_speaker` | Rename a speaker in one meeting |
+| `meetings_fix_text` | Fix recognition errors with "heard as → should be" pairs; the recognised text is kept |
 
 Agents learn the workflow and the error codes from the bundled `meeting-bb-aixenix` skill ([`skills/meeting-bb-aixenix/SKILL.md`](skills/meeting-bb-aixenix/SKILL.md)). It also covers GigaAM checks, since every transcript depends on it.
 
