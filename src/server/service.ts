@@ -572,6 +572,7 @@ export class MeetingsService {
   /** The transcriber config for a specific meeting: a local recording keeps its engine, language, glossary and owner name. */
   transcriberConfigFor(row: MeetingRow, settings: MeetingsSettings, gigaamUrl: string | null): TranscriberConfig {
     const base = this.transcriberConfig(settings, gigaamUrl);
+    const roster = rosterKeys(row.options.calendarAttendees ?? []);
     if (row.source !== "local") return base;
     return {
       ...base,
@@ -579,7 +580,9 @@ export class MeetingsService {
       language: settings.localLanguage.trim() || "ru",
       glossary: settings.localGlossary,
       ownerName: settings.localOwnerName.trim() || "Я",
-      roster: rosterKeys(row.options.calendarAttendees ?? []),
+      // Absent when the row knows no invitees: the roster already in config.json stays (a row
+      // read before the calendar answered must not erase it).
+      ...(roster.length > 0 ? { roster } : {}),
     };
   }
 
@@ -1480,7 +1483,7 @@ export class MeetingsService {
     const next = this.repo.updateMeeting(id, { speakerNames: names });
     this.publishMeeting(id);
     this.bb.realtime.publish(CHANNEL_MEETING_SEGMENTS, { id, lastId: -1 });
-    if (trimmed !== "") this.rememberVoice(next, key, trimmed);
+    this.rememberVoice(next, key, trimmed);
     return next;
   }
 
@@ -1494,6 +1497,12 @@ export class MeetingsService {
       .then(async (settings) => {
         if (!settings.voiceRecognition) return;
         const hostId = row.hostId ?? (await this.primaryHostId());
+        if (name === "") {
+          // The name was removed: the voice must not keep what this speaker taught it.
+          const { retracted } = await this.call("voices.retract", { meetingId: row.id, speakerKey }, { hostId, timeoutMs: 30_000 });
+          if (retracted) this.bb.log.info(`Took a voice sample of ${row.id} back`);
+          return;
+        }
         const roster = rosterKeys(row.options.calendarAttendees ?? []);
         const result = await this.call("voices.learn", { meetingId: row.id, speakerKey, name, roster }, { hostId, timeoutMs: 30_000 });
         this.bb.log.info(
@@ -1521,6 +1530,7 @@ export class MeetingsService {
       speakers: row.speakers.map((speaker) => ({
         key: speaker.key,
         label: row.speakerNames[speaker.key] || speaker.label,
+        named: Boolean(row.speakerNames[speaker.key]) || !(speaker.key.startsWith("spk:") || speaker.key === "unknown"),
         talkSec: speaker.talkSec,
         share: total > 0 ? speaker.talkSec / total : 0,
       })),

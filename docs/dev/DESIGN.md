@@ -1181,7 +1181,11 @@ the system audio) locally, then transcribes with the same pipeline.
   setting says, and
   finds the remote voices among pieces of 3 s and longer, then gives every
   piece to the nearest voice (cluster_anchored): on the first real call,
-  clustering every piece made 84 speakers out of six people. This is an energy heuristic:
+  clustering every piece made 84 speakers out of six people. A voice needs
+  10 s of such pieces; a piece less than 0.3 similar to every voice (someone
+  who said too little to be one) stays «Неизвестный» and is never the owner by
+  voice. On four real calls that was 1-2 % of the pieces under 3 s and none
+  of the longer ones. This is an energy heuristic:
   overlapping speech goes to the louder side, turns shorter than 1.2 s are
   absorbed by their neighbour, and with no system stream every piece is the
   owner's. With keepRawAudio off, mic.pcm
@@ -1219,19 +1223,30 @@ person by themselves.
   background. src/host/voices.ts takes the speaker's pieces from
   transcript.json, their embeddings from embeddings.jsonl, and averages them
   by duration (speakerCentroid). At least 10 s of embedded speech is needed.
-  The result is merged into `<hostData>/voices.json`
-  (`{version, voices: [{name, embedding, seconds, meetings, updatedAt, roster}]}`,
-  embedding = unit float32 little-endian base64, the transcriber's format),
-  weighted by the speech behind the old voice (capped at 600 s) and the new
-  sample. The rename itself never fails because of this.
+  The result goes into `<hostData>/voices.json`
+  (`{version, voices: [{name, embedding, seconds, meetings, updatedAt, roster,
+  samples: [{meeting, embedding, seconds, at}]}]}`, embedding = unit float32
+  little-endian base64, the transcriber's format). A voice keeps one sample
+  per meeting (the latest 50) and its embedding is their mean weighted by
+  speech (600 s at most per sample), so naming the same speaker again counts
+  once. The same speaker of the same meeting under another name (a corrected
+  mistake; recognised by a centroid similarity of 0.9, because a new
+  transcription renumbers the keys) loses that sample there, and removing a
+  name takes the sample back (`voices.retract`); a voice left with nothing
+  is deleted. A voice from before samples were kept counts as one sample of
+  no meeting. All changes of the file go through one queue per host process
+  (fsutil `serialized`): the agent names several speakers within a second.
+  The rename itself never fails because of this.
 * **Recognition.** In the final pass the transcriber (match_voices) compares
   each cluster's duration-weighted centroid with the known voices. A cluster
   is named when it has 10 s of speech, its similarity to one voice is at
   least 0.65, and that voice is at least 0.1 closer than the next; a voice
   names only its closest cluster. Named pieces get speakerKey
   `voice:<name>` and source `voice`. A name from the meeting UI or the owner's
-  microphone always wins; recognition only replaces «Спикер N». Off with
-  `recognizeVoices: false` in the transcriber config.
+  microphone always wins; recognition only replaces «Спикер N». A piece too
+  short for an embedding follows the voice before it with source `mixed`, not
+  `voice`: it was never compared. Off with `recognizeVoices: false` in the
+  transcriber config. This applies to bot meetings as well as local ones.
 * **Calendar roster as a hint.** The invitees of the calendar event a local
   recording was matched to are reduced to roster keys (src/server/roster.ts:
   the lower-cased address, or the lower-cased name when there is none). The
@@ -1243,7 +1258,9 @@ person by themselves.
   (voice_expected); an expected voice is accepted at similarity 0.6 with a
   0.05 margin instead of 0.65 / 0.1. The roster only relaxes thresholds: it
   never names anyone by itself, and people outside it are matched by the
-  ordinary rule.
+  ordinary rule. A row without invitees sends no roster, so the stored one
+  stays; both writers of config.json's transcriber block
+  (mergeConfigTranscriber) run one at a time per meeting.
 * **Numbers behind the thresholds.** One real 15-minute call with six
   speakers: a speaker's own centroid against a 10-40 s sample of the same
   speaker 0.86-1.0, split-half 0.91-0.99 (0.62 for a speaker with 16 s);
@@ -1259,9 +1276,16 @@ person by themselves.
 * **Names from the transcript.** `meetings.namingPrompt` (page RPC) builds a
   request for a BB agent (src/server/speaker-naming.ts): the meeting, the
   speakers still without a name with their share of speech, the ones already
-  named (not to be touched), the invitees of the calendar event the recording
-  was matched to (kept in the row's options.calendarAttendees), and the rule
-  to name only on evidence. The speakers panel shows it in BB's own
+  named (not to be touched; a number the owner renamed by hand counts), the
+  invitees of the calendar event the recording was matched to (kept in the
+  row's options.calendarAttendees; the agent gets names only, addresses stay
+  local), and the rule to name only on evidence. Everything that comes from
+  outside (title, labels, invitees) is cut to one line, and the request says
+  that they and the transcript are data, not instructions, and that only the
+  two meetings tools may be used, for this meeting and the listed keys. That
+  is an instruction to the model, not an enforced boundary: the owner sees
+  the request before sending it, and the names the agent sets are learned as
+  voices without a separate confirmation. The speakers panel shows it in BB's own
   new-thread composer (`experimental_NewThreadComposer`), where the owner
   picks the model and may edit the request; submitting spawns a thread
   (`threads.spawn`). The agent reads with `meetings_transcript` and names

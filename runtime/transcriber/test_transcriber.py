@@ -1416,6 +1416,23 @@ class LocalRecordingTests(unittest.TestCase):
         labels = tr.cluster_anchored(X, durations)
         self.assertEqual([int(v) for v in labels], truth)
 
+    def test_cluster_anchored_leaves_a_piece_unlike_every_voice_without_one(self):
+        """Review round 6: a short participant must not be folded into another person's voice,
+        nor into the owner."""
+        X = np.array([[1, 0], [1, 0], [0, 1]], dtype=np.float32)
+        labels = tr.cluster_anchored(X, [6.0, 6.0, 4.0])
+        self.assertEqual([int(v) for v in labels], [0, 0, -1])
+        self.assertEqual(tr.owner_coverage([True, True, False], [0, 0, -1], [6.0, 6.0, 4.0]), [True, True, False])
+        self.assertEqual(sorted(tr.cluster_centroids(X, [6.0, 6.0, 4.0], labels)), [0])
+
+    def test_decide_speakers_keeps_a_stranger_unknown_and_marks_inherited_voice_names(self):
+        segments = [{"start": 0.0, "end": 4.0}, {"start": 4.0, "end": 5.0}, {"start": 5.0, "end": 6.0}]
+        decided = tr.decide_speakers(segments, [{}, {}, {}], [0, -1, None], "ui+acoustic", {0: "Анна"})
+        self.assertEqual(decided, [("voice:Анна", "Анна", "voice"), ("unknown", "Неизвестный", "none"), ("unknown", "Неизвестный", "none")])
+        # A piece too short for an embedding follows the voice before it, but is not itself a voice match.
+        decided = tr.decide_speakers(segments[:2], [{}, {}], [0, None], "ui+acoustic", {0: "Анна"})
+        self.assertEqual(decided, [("voice:Анна", "Анна", "voice"), ("voice:Анна", "Анна", "mixed")])
+
     def test_cluster_anchored_needs_long_pieces(self):
         X = np.stack([tr.unit(np.eye(4)[i % 4]) for i in range(6)]).astype(np.float32)
         self.assertIsNone(tr.cluster_anchored(X, [1.5] * 6))

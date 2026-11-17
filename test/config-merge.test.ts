@@ -1,0 +1,38 @@
+// config.json's transcriber block has two writers (src/host/meetings.ts): the
+// server's settings and the calendar roster. Neither may undo the other.
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mergeConfigTranscriber, setTranscriberRoster } from "../src/host/meetings.js";
+import { hostPaths } from "../src/host/paths.js";
+
+describe("mergeConfigTranscriber", () => {
+  let root: string;
+  let dir: string;
+  const meetingId = "mtg_config000001";
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "config-merge-"));
+    dir = path.join(hostPaths(root).meetings, meetingId);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "config.json"), JSON.stringify({ meetingId, transcriber: { ownerName: "Я" } }));
+  });
+  afterEach(() => fs.rm(root, { recursive: true, force: true }));
+
+  it("keeps both the roster and the settings when they are written at the same time", async () => {
+    await Promise.all([
+      mergeConfigTranscriber(dir, { engine: "whisper" }),
+      setTranscriberRoster(hostPaths(root), meetingId, ["a@x.io"]),
+      mergeConfigTranscriber(dir, { language: "ru" }),
+    ]);
+    expect(JSON.parse(await fs.readFile(path.join(dir, "config.json"), "utf8"))).toEqual({
+      meetingId,
+      transcriber: { ownerName: "Я", engine: "whisper", roster: ["a@x.io"], language: "ru" },
+    });
+  });
+
+  it("reports a meeting without a config instead of creating one", async () => {
+    await fs.rm(path.join(dir, "config.json"));
+    expect(await setTranscriberRoster(hostPaths(root), meetingId, ["a@x.io"])).toBe(false);
+  });
+});
