@@ -223,6 +223,8 @@ export interface LearnVoiceResult {
 
 /** The voice of one speaker of a finished meeting, from its transcript and embeddings. */
 async function meetingSpeaker(paths: HostPaths, meetingId: string, speakerKey: string): Promise<Centroid | null> {
+  // «Неизвестный» is whoever matched no voice: several people, not a voice to remember.
+  if (speakerKey === "unknown") return null;
   const dir = meetingDir(paths, meetingId);
   const transcript = (await readJson(path.join(dir, F.transcript))) as { segments?: unknown } | null;
   const segments = (Array.isArray(transcript?.segments) ? transcript.segments : []).filter(

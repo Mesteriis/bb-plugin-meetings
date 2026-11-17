@@ -1500,7 +1500,9 @@ export class MeetingsService {
         if (name === "") {
           // The name was removed: the voice must not keep what this speaker taught it.
           const { retracted } = await this.call("voices.retract", { meetingId: row.id, speakerKey }, { hostId, timeoutMs: 30_000 });
-          if (retracted) this.bb.log.info(`Took a voice sample of ${row.id} back`);
+          // Nothing found is normal for a speaker never learned; after a new transcription it can
+          // also mean the speaker's voice moved too far to be recognised as the same sample.
+          this.bb.log.info(retracted ? `Took a voice sample of ${row.id} back` : `No voice sample of ${row.id} to take back for ${speakerKey}`);
           return;
         }
         const roster = rosterKeys(row.options.calendarAttendees ?? []);
