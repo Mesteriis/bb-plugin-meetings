@@ -1220,7 +1220,7 @@ person by themselves.
   transcript.json, their embeddings from embeddings.jsonl, and averages them
   by duration (speakerCentroid). At least 10 s of embedded speech is needed.
   The result is merged into `<hostData>/voices.json`
-  (`{version, voices: [{name, embedding, seconds, meetings, updatedAt}]}`,
+  (`{version, voices: [{name, embedding, seconds, meetings, updatedAt, roster}]}`,
   embedding = unit float32 little-endian base64, the transcriber's format),
   weighted by the speech behind the old voice (capped at 600 s) and the new
   sample. The rename itself never fails because of this.
@@ -1232,6 +1232,18 @@ person by themselves.
   `voice:<name>` and source `voice`. A name from the meeting UI or the owner's
   microphone always wins; recognition only replaces «Спикер N». Off with
   `recognizeVoices: false` in the transcriber config.
+* **Calendar roster as a hint.** The invitees of the calendar event a local
+  recording was matched to are reduced to roster keys (src/server/roster.ts:
+  the lower-cased address, or the lower-cased name when there is none). The
+  server writes them to the meeting's config.json (`transcriber.roster`, host
+  RPC `local.setRoster`, after the calendar answer, because the transcriber
+  is already running) and passes them to `voices.learn`, which keeps the union
+  (at most 300 keys) with the voice. In the final pass a voice is *expected*
+  when at least half of the meeting's roster is in the voice's roster
+  (voice_expected); an expected voice is accepted at similarity 0.5 with a
+  0.05 margin instead of 0.6 / 0.1. The roster only relaxes thresholds: it
+  never names anyone by itself, and people outside it are matched by the
+  ordinary rule. The relaxed numbers are provisional, see below.
 * **Numbers behind the thresholds.** One real 15-minute call with six
   speakers: a speaker's own centroid against a 10-40 s sample of the same
   speaker 0.86-1.0, split-half 0.91-0.99 (0.62 for a speaker with 16 s);

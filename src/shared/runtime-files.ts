@@ -33,6 +33,8 @@ export const transcriberConfigSchema = z
     ownerName: z.string().max(64).optional(),
     /** Name clusters after known voices (<hostData>/voices.json); absent = on. */
     recognizeVoices: z.boolean().optional(),
+    /** Calendar invitees of the meeting as roster keys: a hint for voice recognition. */
+    roster: z.array(z.string().max(200)).max(100).optional(),
     /** Local recording: the directory of the downloaded Whisper model (host path). */
     whisperModel: z.string().max(4096).optional(),
   })

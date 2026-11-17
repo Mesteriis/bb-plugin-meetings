@@ -325,7 +325,15 @@ export const hostContract = defineRpcContract({
   },
   "voices.learn": {
     experimental_description: "Remember the voice of a speaker the owner has named in a finished meeting.",
-    input: z.object({ meetingId: meetingIdSchema, speakerKey: z.string().min(1).max(300), name: z.string().min(1).max(100) }).strict(),
+    input: z
+      .object({
+        meetingId: meetingIdSchema,
+        speakerKey: z.string().min(1).max(300),
+        name: z.string().min(1).max(100),
+        /** Calendar invitees of that meeting as roster keys; remembered with the voice. */
+        roster: z.array(z.string().max(200)).max(100),
+      })
+      .strict(),
     output: z
       .object({
         learned: z.boolean(),
@@ -346,6 +354,11 @@ export const hostContract = defineRpcContract({
     experimental_description: "Delete a known voice by name.",
     input: z.object({ name: z.string().min(1).max(100) }).strict(),
     output: z.object({ forgotten: z.boolean() }).strict(),
+  },
+  "local.setRoster": {
+    experimental_description: "Record a meeting's calendar roster in its config.json for the transcriber's final pass.",
+    input: z.object({ meetingId: meetingIdSchema, roster: z.array(z.string().max(200)).max(100) }).strict(),
+    output: z.object({ ok: z.boolean() }).strict(),
   },
   "local.calendarEvent": {
     experimental_description:

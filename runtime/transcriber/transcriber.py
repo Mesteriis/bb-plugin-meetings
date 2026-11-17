@@ -1150,10 +1150,16 @@ VOICE_MATCH_MARGIN = 0.1  # ...and this much closer to it than to any other know
 VOICE_MIN_S = 10.0  # a cluster with less speech than this is not matched
 
 
+VOICE_EXPECTED_THRESHOLD = 0.5  # for a voice the calendar says to expect in this meeting
+VOICE_EXPECTED_MARGIN = 0.05
+VOICE_EXPECTED_ROSTER_SHARE = 0.5  # that much of this meeting's roster was invited where the voice was learned
+
+
 def load_voices(path):
-    """Known voices from <hostData>/voices.json as [(name, unit embedding)];
-    empty when the file is absent or unreadable. The host writes it when the
-    owner names a speaker (src/host/voices.ts)."""
+    """Known voices from <hostData>/voices.json as [(name, unit embedding, roster)];
+    empty when the file is absent or unreadable. roster is the set of calendar
+    invitees of the meetings the voice was learned in. The host writes the file
+    when a speaker is named (src/host/voices.ts)."""
     data = read_json(path) if path else None
     voices = []
     for entry in (data or {}).get("voices", []) if isinstance(data, dict) else []:
@@ -1161,8 +1167,9 @@ def load_voices(path):
             continue
         name = entry.get("name")
         emb = decode_embedding(entry.get("embedding"))
+        roster = entry.get("roster")
         if isinstance(name, str) and name.strip() and emb is not None:
-            voices.append((name.strip(), emb))
+            voices.append((name.strip(), emb, frozenset(r for r in roster if isinstance(r, str)) if isinstance(roster, list) else frozenset()))
     return voices
 
 
@@ -1178,25 +1185,42 @@ def cluster_centroids(X, durations, labels):
     return out
 
 
-def match_voices(centroids, voices, threshold=VOICE_MATCH_THRESHOLD, margin=VOICE_MATCH_MARGIN):
+def voice_expected(voice_roster, roster):
+    """The calendar says this voice is likely in the meeting: at least half of
+    the meeting's invitees were also invited where the voice was learned (the
+    same recurring meeting, the same team). Other people may still be present,
+    and an expected person may be absent: this only eases the match, it never
+    names anyone by itself."""
+    if not roster or not voice_roster:
+        return False
+    return len(set(roster) & set(voice_roster)) >= VOICE_EXPECTED_ROSTER_SHARE * len(set(roster))
+
+
+def match_voices(centroids, voices, roster=None):
     """{cluster: name} for the clusters that are a known voice. A cluster is
     matched when it has enough speech, is similar enough to one voice and clearly
     closer to it than to the next one; a voice names only its closest cluster.
-    A wrong name is worse than "Спикер 3", so every doubt leaves the cluster unnamed."""
+    A voice the calendar says to expect (voice_expected) needs a little less
+    similarity. A wrong name is worse than "Спикер 3", so every doubt leaves the
+    cluster unnamed."""
+    voices = [(v[0], v[1], v[2] if len(v) > 2 else frozenset()) for v in voices]
     if not voices:
         return {}
-    V = np.stack([v for _, v in voices])
+    V = np.stack([v for _, v, _ in voices])
     best = {}
     for c, (centroid, seconds) in centroids.items():
         if seconds < VOICE_MIN_S:
             continue
         sims = V @ centroid
         order = np.argsort(-sims)
-        top = float(sims[order[0]])
+        k = int(order[0])
+        top = float(sims[k])
         second = float(sims[order[1]]) if len(order) > 1 else -1.0
+        expected = voice_expected(voices[k][2], roster)
+        threshold = VOICE_EXPECTED_THRESHOLD if expected else VOICE_MATCH_THRESHOLD
+        margin = VOICE_EXPECTED_MARGIN if expected else VOICE_MATCH_MARGIN
         if top < threshold or top - second < margin:
             continue
-        k = int(order[0])
         if k not in best or top > best[k][1]:
             best[k] = (c, top)
     return {c: voices[k][0] for k, (c, _) in best.items()}
@@ -1798,6 +1822,13 @@ class Transcriber:
         size = PcmSource(self.paths["pcm"], 0).size()
         return is_number(expected) and expected > 0 and size is not None and size >= expected
 
+    def _roster(self):
+        """The meeting's calendar invitees, read now: the server learns them from the
+        calendar after the recording has started (config.json transcriber.roster)."""
+        cfg = read_json(os.path.join(self.dir, "config.json")) or {}
+        roster = (cfg.get("transcriber") or {}).get("roster") if isinstance(cfg, dict) else None
+        return [r for r in roster if isinstance(r, str)] if isinstance(roster, list) else []
+
     def _restore_streams(self):
         """A local recording's mic.pcm and system.pcm from their Opus copies, when the
         raw files were removed after the first transcript: without them nobody is the
@@ -2017,7 +2048,8 @@ class Transcriber:
                 log(f"clustering: {len(idx)} embeddings -> {int(labels.max()) + 1} cluster(s) at {threshold}")
                 if self.recognize_voices and self.host_data:
                     voice_names = match_voices(cluster_centroids(X, durations, labels),
-                                               load_voices(os.path.join(self.host_data, "voices.json")))
+                                               load_voices(os.path.join(self.host_data, "voices.json")),
+                                               self._roster())
                     if voice_names:
                         log(f"recognized voices: {', '.join(sorted(voice_names.values()))}")
             elif mode == "acoustic":

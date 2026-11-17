@@ -33,6 +33,7 @@ import {
 } from "./src/host/meetings.js";
 import { lookupCalendarEvent } from "./src/host/local-calendar.js";
 import { forgetVoice, learnVoice, listVoices } from "./src/host/voices.js";
+import { setTranscriberRoster } from "./src/host/meetings.js";
 import { localPoll, startLocalMeeting } from "./src/host/local-recording.js";
 import { hostPaths, type HostPaths } from "./src/host/paths.js";
 import { cancelSetups, startSetup } from "./src/host/setup.js";
@@ -146,6 +147,9 @@ const handlers: ExperimentalHostRpcHandlers<typeof hostContract> = {
   "voices.learn": async (input, context) => learnVoice(pathsFor(context.experimental_paths.dataDir), input, Date.now()),
   "voices.list": async (_input, context) => ({ voices: await listVoices(pathsFor(context.experimental_paths.dataDir)) }),
   "voices.forget": async ({ name }, context) => ({ forgotten: await forgetVoice(pathsFor(context.experimental_paths.dataDir), name) }),
+  "local.setRoster": async ({ meetingId, roster }, context) => ({
+    ok: await setTranscriberRoster(pathsFor(context.experimental_paths.dataDir), meetingId, roster),
+  }),
   "local.calendarEvent": async ({ appKey, at }, context) => lookupCalendarEvent(pathsFor(context.experimental_paths.dataDir), appKey, at),
   "local.start": async (input, context) => startLocalMeeting(pathsFor(context.experimental_paths.dataDir), input),
 };

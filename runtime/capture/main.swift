@@ -1349,6 +1349,19 @@ func eventLinks(_ event: EKEvent) -> [String] {
   return links
 }
 
+/// "Имя <почта>", or whichever of the two the calendar has. The address identifies
+/// the person across meetings; the name is what a reader recognizes.
+func attendeeLabel(_ participant: EKParticipant) -> String? {
+  let address = participant.url.scheme == "mailto" ? String(participant.url.absoluteString.dropFirst("mailto:".count)) : nil
+  let name = participant.name.flatMap { $0 == address || $0.isEmpty ? nil : $0 }
+  switch (name, address) {
+  case let (name?, address?): return "\(name) <\(address)>"
+  case let (name?, nil): return name
+  case let (nil, address?): return address
+  default: return nil
+  }
+}
+
 /// `events --from <ms> --to <ms>`: the system calendar's events in that window,
 /// for naming a recording after the meeting it belongs to. Asks for calendar
 /// access the first time; prints {"access": "granted"|"denied"|"timeout", "events": [...]}.
@@ -1378,7 +1391,7 @@ func runEvents(from: Double, to: Double) {
         "allDay": event.isAllDay,
         "declined": event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .declined } ?? false,
         "links": eventLinks(event),
-        "attendees": (event.attendees ?? []).filter { !$0.isCurrentUser }.compactMap { $0.name }.prefix(50).map { $0 },
+        "attendees": (event.attendees ?? []).filter { !$0.isCurrentUser }.compactMap(attendeeLabel).prefix(50).map { $0 },
       ])
     }
   }

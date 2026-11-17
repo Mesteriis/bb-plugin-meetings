@@ -495,6 +495,17 @@ async function stopTranscriber(dir: string, pid: number): Promise<void> {
   });
 }
 
+/** Record the meeting's calendar roster for the transcriber; false when the meeting has no config yet. */
+export async function setTranscriberRoster(paths: HostPaths, meetingId: string, roster: readonly string[]): Promise<boolean> {
+  const dir = meetingDir(paths, meetingId);
+  const config = await readJson(file(dir, F.config));
+  if (config === null || typeof config !== "object" || Array.isArray(config)) return false;
+  const current = config as Record<string, unknown>;
+  const transcriber = (typeof current.transcriber === "object" && current.transcriber !== null ? current.transcriber : {}) as Record<string, unknown>;
+  await writeJsonAtomic(file(dir, F.config), { ...current, transcriber: { ...transcriber, roster: [...roster] } });
+  return true;
+}
+
 async function updateConfigTranscriber(dir: string, transcriber: TranscriberConfig): Promise<void> {
   const config = await readJson(file(dir, F.config));
   if (config === null || typeof config !== "object" || Array.isArray(config)) {
