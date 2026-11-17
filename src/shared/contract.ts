@@ -323,6 +323,19 @@ export const hostContract = defineRpcContract({
       })
       .strict(),
   },
+  "local.calendarEvent": {
+    experimental_description:
+      "The macOS system calendar event a call in this app at this time belongs to, for naming a local recording.",
+    input: z.object({ appKey: z.string().min(1).max(64), at: z.number() }).strict(),
+    output: z
+      .object({
+        /** Calendar access: granted, denied by the owner, no answer in time, or the helper failed. */
+        access: z.enum(["granted", "denied", "timeout", "error"]),
+        title: z.string().nullable(),
+        attendees: z.array(z.string()),
+      })
+      .strict(),
+  },
   "local.start": {
     experimental_description:
       "Start a local recording: write the meeting directory and spawn the capture helper (no bot joins).",

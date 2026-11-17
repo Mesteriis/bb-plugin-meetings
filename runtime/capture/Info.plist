@@ -12,6 +12,8 @@
   <string>1</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Локальная запись встреч записывает ваш микрофон.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Локальная запись встреч берёт название встречи из вашего календаря.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Локальная запись встреч захватывает системный звук, чтобы записать речь других участников встречи.</string>
 </dict>

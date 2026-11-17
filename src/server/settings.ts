@@ -396,6 +396,12 @@ export function defineSettings(bb: BbPluginApi) {
       experimental_schema: z.string().max(64),
       default: "Я",
     },
+    localCalendarTitles: {
+      type: "boolean",
+      label: "Название встречи из календаря macOS",
+      description: "Называть локальную запись по событию системного календаря, которое идёт в момент начала записи. macOS один раз спросит доступ к календарю для BB; из события берутся название, время, ссылки и имена участников.",
+      default: true,
+    },
     localMicrophone: {
       type: "string",
       label: "Микрофон для локальной записи",

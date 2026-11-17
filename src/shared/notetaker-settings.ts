@@ -47,6 +47,7 @@ export const notetakerSettingsPatchSchema = z.object({
   localStartThresholdSec: z.number().int().min(1).max(300),
   localGraceSec: z.number().int().min(5).max(3600),
   localOwnerName: z.string().max(64),
+  localCalendarTitles: z.boolean(),
   /** Input device name; empty = the microphone the meeting app uses. */
   localMicrophone: z.string().max(200),
   localEngine: z.enum(["whisper", "gigaam"]),

@@ -127,6 +127,8 @@ export class FakeRuntime {
   detectionDriven = false;
   localStartCalls: Array<{ meetingId: string; appKey: string; engine: string; glossary: string; ownerName: string; inputDevice: string }> = [];
   localPollError: string | null = null;
+  /** The answer of local.calendarEvent, or "throw" to fail the call. */
+  calendarLookup: { access: string; title: string | null; attendees: readonly string[] } | "throw" = { access: "granted", title: null, attendees: [] };
   controlSeq = 0;
   viewers: Array<{ meetingId: string; untilMs: number }> = [];
   /** Called on every meeting.status poll, to script transitions. */
@@ -307,6 +309,10 @@ export class FakeRuntime {
           ended: events.filter((event) => event.type === "ended").map((event) => ({ appKey: event.appKey, label: event.label })),
           error: null,
         };
+      }
+      case "local.calendarEvent": {
+        if (this.calendarLookup === "throw") throw new Error("calendar lookup failed");
+        return { ...this.calendarLookup, attendees: [...this.calendarLookup.attendees] };
       }
       case "local.start": {
         const id = args.meetingId as string;
