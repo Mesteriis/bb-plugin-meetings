@@ -1213,6 +1213,57 @@ the system audio) locally, then transcribes with the same pipeline.
   implements readProc/listProcs with ps (state, pgid, tty, command) and lsof
   (cwd). The Linux /proc path is unchanged.
 
+### 15.1 The final pass: two streams apart
+
+During the call the transcriber reads the mix (audio.pcm) and its text is a
+draft. When the recorder has finished (and in every offline run) a local
+recording with both streams on disk is transcribed again, stream by stream
+(_run_two_streams; `separateStreams: false` keeps the mixed pass):
+
+* **system.pcm is the remote side** and nothing else: VAD, voice-change
+  splitting, ASR and embeddings run on it alone.
+* **mic.pcm is the owner plus, with loudspeakers, everyone else.** On a real
+  call the remote side sat in the microphone a median 4 dB below the app's
+  audio, with a spread of tens of dB, so loudness cannot tell them apart.
+  Predictability can: estimate_echo_lag finds the delay of the app's audio
+  in the microphone (cross-correlation over the loudest windows; 144-153 ms
+  on the real call, peak 13.7 times the median; no clear peak = headphones,
+  the microphone is used as it is), cancel_echo runs a frequency-domain block
+  LMS filter (4096 taps, one warm-up pass over the first five minutes) and
+  owner_blocks mutes every 256 ms block where the app's audio was playing and
+  the filter took at least 1.5 dB off the microphone. Measured on that call
+  against the earlier labels: 6-7 dB off remote-only stretches, 0.0 dB (0.6 at
+  the 90th percentile) off the owner's; 94 % of the owner's speech and 8 % of
+  the remote side's stayed in the owner stream. The filter is linear and the
+  path is not (the device's own processing, the Opus copies in a
+  retranscription), hence the gate rather than the residual alone.
+* The owner stream (owner.pcm, removed afterwards) goes through VAD and ASR;
+  its pieces are the owner's by construction and get no embedding.
+* **Echo that got through**: a microphone piece at least half covered by
+  remote pieces (0.3 s slack) whose words are at least 60 % the words said
+  there is dropped (echo_duplicates).
+* Segments carry `stream: "mic" | "system"` in segments.jsonl; _finalize
+  takes the owner from it and skips owner_coverage. Without usable streams
+  (one missing, silent, or of a different length) the mixed pass and the
+  loudness/voice rules above remain.
+* Not handled: a remote remark spoken at the same time as the owner's is in
+  the system stream and is transcribed there, but two people talking at once
+  inside the system stream are one piece.
+* The segment checkpoint is not advanced during this pass: an interrupted
+  run starts the transcription over.
+
+Whisper's prompt is the owner's glossary plus `transcriber.hints` (the
+calendar title and invitee names, written by `local.setRoster`; re-read every
+30 s during the call because the calendar answers after the start).
+`finalModel: "large-v3"` in the transcriber config makes the host add
+`whisperFinalModel` when <hostData>/models/whisper-large-v3 is fully
+downloaded (setup's whisperFinalStep writes a `.complete` marker); the
+two-stream pass and offline runs then use it.
+
+A local recorder compresses audio, mic and system to Opus after the stop, all
+three at once, and the host gives it 15 minutes before a stop is escalated
+(stopEscalationMs): 45 s, a bot's allowance, cut a 26-minute call's files.
+
 ## 16. Known voices
 
 Naming a speaker teaches the plugin that voice; later meetings name the
@@ -1299,3 +1350,28 @@ person by themselves.
   with `meetings_rename_speaker`, so each name goes through renameSpeaker and
   is remembered as a voice. The transcript goes to the model the owner chose.
   Not run end to end yet.
+
+## 17. Text fixes, suggestions, recording rules
+
+* **Text fixes.** `meetings.textFixPrompt` (page RPC) builds a request for a
+  BB agent (src/server/text-fix.ts), shown in BB's composer like the naming
+  request, with the same data-not-instructions wording, the owner's glossary
+  and invitee names (no addresses). The agent answers through the
+  `meetings_fix_text` tool with "heard as -> should be" pairs; applyTextFixes
+  replaces whole words (Unicode letter/digit boundaries, case-insensitive,
+  whitespace-tolerant) in every segment. The first change of a segment stores
+  the recognised text in `segments.original_text`; `meetings.revertTextFixes`
+  puts it back; the FTS index follows both. A new transcription replaces
+  corrected text together with what it corrected.
+* **Suggestions.** `voices.suggest` (host) compares each numbered speaker's
+  centroid with the known voices nobody in the meeting already has and returns
+  the closest one at similarity 0.5 or more and 0.05 clearer than the next, a
+  voice to its closest speaker only. The speakers panel shows it as a
+  question; confirming is an ordinary rename, so the voice is learned.
+* **Recording rules.** `localSkipTitles` (one rule per line, substring,
+  case-insensitive): when the calendar lookup returns a matching title the
+  server deletes the recording; the detection state still says "recording"
+  for that app, so it does not start again until the app releases the
+  microphone. `audioRetentionDays`: once an hour the server asks the host to
+  remove the audio files (`meeting.dropAudio`) of done or failed meetings that
+  ended longer ago, and clears hasAudio; transcripts stay.
