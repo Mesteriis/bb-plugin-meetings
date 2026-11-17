@@ -484,6 +484,12 @@ export const rpcContract = defineRpcContract({
     input: z.object({ id: meetingIdSchema }).strict(),
     output: z.object({ prompt: z.string() }).strict(),
   },
+  "meetings.voiceSuggestions": {
+    input: z.object({ id: meetingIdSchema }).strict(),
+    output: z
+      .object({ suggestions: z.array(z.object({ speakerKey: z.string(), name: z.string(), similarity: z.number() }).strict()) })
+      .strict(),
+  },
   "voices.list": {
     input: z.object({}).strict(),
     output: z

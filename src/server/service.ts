@@ -1551,6 +1551,18 @@ export class MeetingsService {
     });
   }
 
+  /** Known voices that this meeting's numbered speakers resemble, for the owner to confirm. */
+  async voiceSuggestions(id: string): Promise<{ speakerKey: string; name: string; similarity: number }[]> {
+    const row = this.requireMeeting(id);
+    if (!row.transcriptFinal || !(await this.settings.get()).voiceRecognition) return [];
+    const numbered = row.speakers.filter((speaker) => speaker.key.startsWith("spk:") && !row.speakerNames[speaker.key]);
+    if (numbered.length === 0) return [];
+    const taken = row.speakers.filter((speaker) => !numbered.includes(speaker)).map((speaker) => row.speakerNames[speaker.key] || speaker.label);
+    const hostId = row.hostId ?? (await this.primaryHostId());
+    const { suggestions } = await this.call("voices.suggest", { meetingId: id, speakerKeys: numbered.map((speaker) => speaker.key), taken }, { hostId, timeoutMs: 30_000 });
+    return suggestions;
+  }
+
   /** Test hook: resolves when the voices being remembered have been. */
   async voicesSettled(): Promise<void> {
     await Promise.all([...this.voiceTasks]);

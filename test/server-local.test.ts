@@ -301,6 +301,29 @@ describe("local recording auto-record", () => {
     expect(loaded.service.transcriberConfigFor(row as never, { ...settings, localFinalModel: "large-v3" } as never, null)).toMatchObject({ finalModel: "large-v3" });
   });
 
+  it("asks for voice suggestions only for numbered speakers, telling which names are taken", async () => {
+    const loaded = await load({ settings: macSettings(), now: () => T0 });
+    loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+    loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+    await loaded.service.pollLocalDetection();
+    await loaded.service.localTitlesSettled();
+    const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+    const repo = (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown } }).repo;
+    repo.updateMeeting(id, {
+      transcriptFinal: true,
+      speakerNames: { "spk:2": "Борис" },
+      speakers: [
+        { key: "ui:Я", label: "Я", source: "ui", talkSec: 50, segments: 9 },
+        { key: "voice:Анна", label: "Анна", source: "voice", talkSec: 40, segments: 9 },
+        { key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 },
+        { key: "spk:2", label: "Спикер 2", source: "acoustic", talkSec: 40, segments: 9 },
+      ],
+    });
+    loaded.fake.suggestions = [{ speakerKey: "spk:1", name: "Марина", similarity: 0.58 }];
+    expect(await loaded.service.voiceSuggestions(id)).toEqual([{ speakerKey: "spk:1", name: "Марина", similarity: 0.58 }]);
+    expect(loaded.fake.suggestCalls).toEqual([{ meetingId: id, speakerKeys: ["spk:1"], taken: ["Я", "Анна", "Борис"] }]);
+  });
+
   it("leaves the stored roster alone when the meeting has no calendar invitees", async () => {
     const loaded = await load({ settings: macSettings(), now: () => T0 });
     loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });

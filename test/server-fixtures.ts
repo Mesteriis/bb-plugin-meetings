@@ -133,6 +133,8 @@ export class FakeRuntime {
   voiceRetractCalls: Array<{ meetingId: string; speakerKey: string }> = [];
   /** Voice methods in the order the host received them. */
   voiceOrder: string[] = [];
+  suggestCalls: Array<{ meetingId: string; speakerKeys: string[]; taken: string[] }> = [];
+  suggestions: Array<{ speakerKey: string; name: string; similarity: number }> = [];
   voices: Array<{ name: string; seconds: number; meetings: number; updatedAt: number }> = [];
   /** The answer of local.calendarEvent, or "throw" to fail the call. */
   calendarLookup: { access: string; title: string | null; attendees: readonly string[] } | "throw" = { access: "granted", title: null, attendees: [] };
@@ -329,6 +331,9 @@ export class FakeRuntime {
       case "local.setRoster":
         this.rosterCalls.push({ meetingId: args.meetingId as string, roster: args.roster as string[], hints: args.hints as string[] });
         return { ok: true };
+      case "voices.suggest":
+        this.suggestCalls.push({ meetingId: args.meetingId as string, speakerKeys: args.speakerKeys as string[], taken: args.taken as string[] });
+        return { suggestions: this.suggestions };
       case "voices.list":
         return { voices: this.voices };
       case "voices.forget": {

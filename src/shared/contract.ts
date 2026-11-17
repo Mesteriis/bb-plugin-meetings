@@ -356,6 +356,19 @@ export const hostContract = defineRpcContract({
     input: z.object({ meetingId: meetingIdSchema, speakerKey: z.string().min(1).max(300) }).strict(),
     output: z.object({ retracted: z.boolean() }).strict(),
   },
+  "voices.suggest": {
+    experimental_description: "Known voices that unnamed speakers of a meeting resemble, for the owner to confirm.",
+    input: z
+      .object({
+        meetingId: meetingIdSchema,
+        speakerKeys: z.array(z.string().min(1).max(300)).max(100),
+        taken: z.array(z.string().max(100)).max(200),
+      })
+      .strict(),
+    output: z
+      .object({ suggestions: z.array(z.object({ speakerKey: z.string(), name: z.string(), similarity: z.number() }).strict()) })
+      .strict(),
+  },
   "voices.list": {
     experimental_description: "Known voices, without their embeddings.",
     input: z.object({}).strict(),
