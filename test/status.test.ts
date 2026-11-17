@@ -324,4 +324,19 @@ describe("deaf-bot warning (state.json audioIssue)", () => {
     expect(parsed.audioIssue?.reason).toBeUndefined();
     expect(parsed.audioIssue?.message).toContain("Бот не слышит");
   });
+
+  describe("a recording that started without a live transcriber", () => {
+    const recording = snap({ bot: { phase: "in_meeting", activeSpeakers: [] }, botAlive: true, transcriber: null });
+
+    it("asks for one when live transcription is wanted (a local recording, or a start that failed)", () => {
+      expect(mapRuntime(recording, { ...ctx, status: "recording", startLiveTranscriber: true }).needsTranscriber).toBe(true);
+    });
+
+    it("does not when live transcription is off, the recorder is gone, or too many runs failed", () => {
+      expect(mapRuntime(recording, { ...ctx, status: "recording" }).needsTranscriber).toBe(false);
+      expect(mapRuntime(recording, { ...ctx, status: "recording", startLiveTranscriber: false }).needsTranscriber).toBe(false);
+      expect(mapRuntime({ ...recording, botAlive: false }, { ...ctx, status: "recording", startLiveTranscriber: true }).needsTranscriber).toBe(false);
+      expect(mapRuntime(recording, { ...ctx, status: "recording", startLiveTranscriber: true, transcriberFailures: 3 }).needsTranscriber).toBe(false);
+    });
+  });
 });
