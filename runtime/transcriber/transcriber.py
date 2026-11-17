@@ -1145,12 +1145,12 @@ def cluster_anchored(X, durations, threshold=ANCHOR_THRESHOLD):
     return np.array([order[int(lab)] for lab in nearest], dtype=int)
 
 
-VOICE_MATCH_THRESHOLD = 0.6  # a cluster this similar to a known voice is that person
+VOICE_MATCH_THRESHOLD = 0.65  # a cluster this similar to a known voice is that person
 VOICE_MATCH_MARGIN = 0.1  # ...and this much closer to it than to any other known voice
 VOICE_MIN_S = 10.0  # a cluster with less speech than this is not matched
 
 
-VOICE_EXPECTED_THRESHOLD = 0.5  # for a voice the calendar says to expect in this meeting
+VOICE_EXPECTED_THRESHOLD = 0.6  # for a voice the calendar says to expect in this meeting
 VOICE_EXPECTED_MARGIN = 0.05
 VOICE_EXPECTED_ROSTER_SHARE = 0.5  # that much of this meeting's roster was invited where the voice was learned
 

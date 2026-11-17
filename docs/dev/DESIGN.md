@@ -1227,7 +1227,7 @@ person by themselves.
 * **Recognition.** In the final pass the transcriber (match_voices) compares
   each cluster's duration-weighted centroid with the known voices. A cluster
   is named when it has 10 s of speech, its similarity to one voice is at
-  least 0.6, and that voice is at least 0.1 closer than the next; a voice
+  least 0.65, and that voice is at least 0.1 closer than the next; a voice
   names only its closest cluster. Named pieces get speakerKey
   `voice:<name>` and source `voice`. A name from the meeting UI or the owner's
   microphone always wins; recognition only replaces «Спикер N». Off with
@@ -1240,15 +1240,19 @@ person by themselves.
   is already running) and passes them to `voices.learn`, which keeps the union
   (at most 300 keys) with the voice. In the final pass a voice is *expected*
   when at least half of the meeting's roster is in the voice's roster
-  (voice_expected); an expected voice is accepted at similarity 0.5 with a
-  0.05 margin instead of 0.6 / 0.1. The roster only relaxes thresholds: it
+  (voice_expected); an expected voice is accepted at similarity 0.6 with a
+  0.05 margin instead of 0.65 / 0.1. The roster only relaxes thresholds: it
   never names anyone by itself, and people outside it are matched by the
-  ordinary rule. The relaxed numbers are provisional, see below.
+  ordinary rule.
 * **Numbers behind the thresholds.** One real 15-minute call with six
   speakers: a speaker's own centroid against a 10-40 s sample of the same
   speaker 0.86-1.0, split-half 0.91-0.99 (0.62 for a speaker with 16 s);
-  different speakers at most 0.44. Recognition across different meetings,
-  microphones and rooms has not been measured.
+  different speakers at most 0.44. Across meetings (three real calls of one
+  morning, 2026-11-17, same owner microphone, remote voices through Zoom):
+  the same person 0.80, 0.90 and 0.95; a cluster against another person's
+  remembered voice up to 0.57. Hence 0.65 for a stranger and 0.6 for a voice
+  the calendar expects. Three true pairs are few: other microphones, rooms
+  and a longer gap between meetings have not been measured.
 * **Management.** `voices.list` and `voices.forget` (host and page RPC); the
   recording settings tab lists the voices and forgets them one by one.
   Voiceprints stay in host data and are never sent anywhere.
