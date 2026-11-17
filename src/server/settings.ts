@@ -396,6 +396,12 @@ export function defineSettings(bb: BbPluginApi) {
       experimental_schema: z.string().max(64),
       default: "Я",
     },
+    voiceRecognition: {
+      type: "boolean",
+      label: "Узнавать говорящих по голосу",
+      description: "Когда вы даёте говорящему имя на странице встречи, его голос запоминается на машине записи, и в следующих встречах этот человек подписывается сам. Голоса никуда не передаются; их список и удаление — в настройках записи.",
+      default: true,
+    },
     localCalendarTitles: {
       type: "boolean",
       label: "Название встречи из календаря macOS",

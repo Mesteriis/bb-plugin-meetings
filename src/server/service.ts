@@ -141,6 +141,8 @@ export class MeetingsService {
   private readonly starting = new Set<string>();
   /** Calendar title lookups under way for local recordings. */
   private readonly titleLookups = new Set<Promise<void>>();
+  /** Voices being remembered after a speaker was named. */
+  private readonly voiceTasks = new Set<Promise<void>>();
   /** Settles once an in-flight start has recorded its outcome (a stop waits for it). */
   private readonly startSettled = new Map<string, Promise<void>>();
   /** Joins whose caller is waiting and reports a failure itself (no thread message). */
@@ -561,6 +563,7 @@ export class MeetingsService {
       speakerLagMs: clampInt(settings.speakerLagMs, 0, 5000),
       keepRawAudio: settings.keepRawAudio,
       threads: 0,
+      recognizeVoices: settings.voiceRecognition,
     };
   }
 
@@ -1469,7 +1472,45 @@ export class MeetingsService {
     const next = this.repo.updateMeeting(id, { speakerNames: names });
     this.publishMeeting(id);
     this.bb.realtime.publish(CHANNEL_MEETING_SEGMENTS, { id, lastId: -1 });
+    if (trimmed !== "") this.rememberVoice(next, key, trimmed);
     return next;
+  }
+
+  /**
+   * The owner named a speaker: keep that voice for later meetings. In the
+   * background, and never an error for the rename itself.
+   */
+  private rememberVoice(row: MeetingRow, speakerKey: string, name: string): void {
+    const task = this.settings
+      .get()
+      .then(async (settings) => {
+        if (!settings.voiceRecognition) return;
+        const hostId = row.hostId ?? (await this.primaryHostId());
+        const result = await this.call("voices.learn", { meetingId: row.id, speakerKey, name }, { hostId, timeoutMs: 30_000 });
+        this.bb.log.info(
+          result.learned
+            ? `Remembered a voice from ${row.id} (${Math.round(result.seconds)} s of speech)`
+            : `No voice remembered from ${row.id}: ${result.reason} (${Math.round(result.seconds)} s of speech)`,
+        );
+      })
+      .catch((error: unknown) => this.bb.log.warn(`Could not remember a voice from ${row.id}: ${errorMessage(error)}`))
+      .finally(() => this.voiceTasks.delete(task));
+    this.voiceTasks.add(task);
+  }
+
+  /** Test hook: resolves when the voices being remembered have been. */
+  async voicesSettled(): Promise<void> {
+    await Promise.all([...this.voiceTasks]);
+  }
+
+  async listVoices(): Promise<{ name: string; seconds: number; meetings: number; updatedAt: number }[]> {
+    return (await this.call("voices.list", {}, { timeoutMs: 15_000 })).voices;
+  }
+
+  /** Delete a voice and return the ones that remain. */
+  async forgetVoice(name: string): Promise<{ name: string; seconds: number; meetings: number; updatedAt: number }[]> {
+    await this.call("voices.forget", { name }, { timeoutMs: 15_000 });
+    return this.listVoices();
   }
 
   search(query: string, limit: number): SearchHit[] {

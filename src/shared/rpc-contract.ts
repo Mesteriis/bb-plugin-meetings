@@ -480,6 +480,18 @@ export const rpcContract = defineRpcContract({
   },
   "google.sync": { input: z.null(), output: googleStatusSchema },
   "google.disconnect": { input: z.null(), output: googleStatusSchema },
+  "voices.list": {
+    input: z.object({}).strict(),
+    output: z
+      .object({ voices: z.array(z.object({ name: z.string(), seconds: z.number(), meetings: z.number(), updatedAt: z.number() }).strict()) })
+      .strict(),
+  },
+  "voices.forget": {
+    input: z.object({ name: z.string().min(1).max(100) }).strict(),
+    output: z
+      .object({ voices: z.array(z.object({ name: z.string(), seconds: z.number(), meetings: z.number(), updatedAt: z.number() }).strict()) })
+      .strict(),
+  },
   "env.status": {
     input: z.null(),
     output: z

@@ -1199,3 +1199,36 @@ the system audio) locally, then transcribes with the same pipeline.
 * **Process inspection.** macOS has no /proc: src/host/processes-mac.ts
   implements readProc/listProcs with ps (state, pgid, tty, command) and lsof
   (cwd). The Linux /proc path is unchanged.
+
+## 16. Known voices
+
+Naming a speaker teaches the plugin that voice; later meetings name the
+person by themselves.
+
+* **Learning.** `meetings.renameSpeaker` with a non-empty name, while the
+  voiceRecognition setting is on, calls the host's `voices.learn` in the
+  background. src/host/voices.ts takes the speaker's pieces from
+  transcript.json, their embeddings from embeddings.jsonl, and averages them
+  by duration (speakerCentroid). At least 10 s of embedded speech is needed.
+  The result is merged into `<hostData>/voices.json`
+  (`{version, voices: [{name, embedding, seconds, meetings, updatedAt}]}`,
+  embedding = unit float32 little-endian base64, the transcriber's format),
+  weighted by the speech behind the old voice (capped at 600 s) and the new
+  sample. The rename itself never fails because of this.
+* **Recognition.** In the final pass the transcriber (match_voices) compares
+  each cluster's duration-weighted centroid with the known voices. A cluster
+  is named when it has 10 s of speech, its similarity to one voice is at
+  least 0.6, and that voice is at least 0.1 closer than the next; a voice
+  names only its closest cluster. Named pieces get speakerKey
+  `voice:<name>` and source `voice`. A name from the meeting UI or the owner's
+  microphone always wins; recognition only replaces «Спикер N». Off with
+  `recognizeVoices: false` in the transcriber config.
+* **Numbers behind the thresholds.** One real 15-minute call with six
+  speakers: a speaker's own centroid against a 10-40 s sample of the same
+  speaker 0.86-1.0, split-half 0.91-0.99 (0.62 for a speaker with 16 s);
+  different speakers at most 0.44. Recognition across different meetings,
+  microphones and rooms has not been measured.
+* **Management.** `voices.list` and `voices.forget` (host and page RPC); the
+  recording settings tab lists the voices and forgets them one by one.
+  Voiceprints stay in host data and are never sent anywhere.
+

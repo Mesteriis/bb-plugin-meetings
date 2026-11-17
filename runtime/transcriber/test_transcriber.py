@@ -1161,6 +1161,70 @@ class ScaleTest(unittest.TestCase):
         self.assertEqual(len(t["speakers"]), 3)
 
 
+class VoiceRecognitionTests(unittest.TestCase):
+    """Known voices (host-data/voices.json) name the clusters of a new meeting."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="voices-")
+        rng = np.random.default_rng(11)
+        self.anna, self.boris, self.vera = (tr.unit(rng.normal(size=32)) for _ in range(3))
+        self.rng = rng
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def near(self, voice, noise):
+        return tr.unit(voice + noise * self.rng.normal(size=32))
+
+    def test_load_voices_reads_names_and_skips_broken_entries(self):
+        path = os.path.join(self.tmp, "voices.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "voices": [
+                {"name": "Анна", "embedding": tr.encode_embedding(self.anna), "seconds": 40},
+                {"name": "", "embedding": tr.encode_embedding(self.boris)},
+                {"name": "Сломан", "embedding": "not base64!"},
+                "x",
+            ]}, f)
+        voices = tr.load_voices(path)
+        self.assertEqual([name for name, _ in voices], ["Анна"])
+        self.assertAlmostEqual(float(voices[0][1] @ self.anna), 1.0, places=5)
+        self.assertEqual(tr.load_voices(os.path.join(self.tmp, "missing.json")), [])
+
+    def test_match_voices_names_the_clusters_it_knows(self):
+        centroids = {0: (self.near(self.anna, 0.1), 60.0), 1: (self.near(self.vera, 0.1), 45.0), 2: (self.near(self.boris, 0.1), 30.0)}
+        voices = [("Анна", self.anna), ("Борис", self.boris)]
+        self.assertEqual(tr.match_voices(centroids, voices), {0: "Анна", 2: "Борис"})
+
+    def test_match_voices_refuses_weak_ambiguous_and_short_matches(self):
+        # Below the threshold: a different person.
+        self.assertEqual(tr.match_voices({0: (self.vera, 60.0)}, [("Анна", self.anna)]), {})
+        # Two known voices equally close: no guess.
+        between = tr.unit(self.anna + self.boris)
+        self.assertEqual(tr.match_voices({0: (between, 60.0)}, [("Анна", self.anna), ("Борис", self.boris)]), {})
+        # Too little speech to trust the cluster.
+        self.assertEqual(tr.match_voices({0: (self.anna, 9.0)}, [("Анна", self.anna)]), {})
+
+    def test_match_voices_gives_a_voice_to_one_cluster_only(self):
+        centroids = {0: (self.near(self.anna, 0.25), 60.0), 1: (self.near(self.anna, 0.05), 60.0)}
+        self.assertEqual(tr.match_voices(centroids, [("Анна", self.anna)]), {1: "Анна"})
+
+    def test_cluster_centroids_weigh_pieces_by_duration(self):
+        X = np.stack([self.anna, self.boris, self.boris]).astype(np.float32)
+        centroids = tr.cluster_centroids(X, [30.0, 5.0, 7.0], [0, 1, 1])
+        self.assertEqual(sorted(centroids), [0, 1])
+        self.assertEqual(centroids[0][1], 30.0)
+        self.assertEqual(centroids[1][1], 12.0)
+        self.assertAlmostEqual(float(centroids[1][0] @ self.boris), 1.0, places=5)
+
+    def test_decide_speakers_uses_voice_names_but_not_over_the_owner(self):
+        segments = [{"start": 0.0, "end": 4.0}, {"start": 4.0, "end": 8.0}, {"start": 8.0, "end": 12.0}]
+        coverages = [{"Я": 1.0}, {}, {}]
+        out = tr.decide_speakers(segments, coverages, [0, 1, 2], "ui+acoustic", voice_names={0: "Анна", 1: "Борис"})
+        self.assertEqual(out, [("ui:Я", "Я", "ui"), ("voice:Борис", "Борис", "voice"), ("spk:1", "Спикер 1", "acoustic")])
+        acoustic = tr.decide_speakers(segments, [{}, {}, {}], [0, 1, 2], "acoustic", voice_names={1: "Борис"})
+        self.assertEqual([label for _, label, _ in acoustic], ["Спикер 1", "Борис", "Спикер 2"])
+
+
 class LocalRecordingTests(unittest.TestCase):
     """Local recording (DESIGN §15): engine selection, mic→owner attribution, serialized Whisper calls."""
 

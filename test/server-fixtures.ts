@@ -127,6 +127,8 @@ export class FakeRuntime {
   detectionDriven = false;
   localStartCalls: Array<{ meetingId: string; appKey: string; engine: string; glossary: string; ownerName: string; inputDevice: string }> = [];
   localPollError: string | null = null;
+  voiceLearnCalls: Array<{ meetingId: string; speakerKey: string; name: string }> = [];
+  voices: Array<{ name: string; seconds: number; meetings: number; updatedAt: number }> = [];
   /** The answer of local.calendarEvent, or "throw" to fail the call. */
   calendarLookup: { access: string; title: string | null; attendees: readonly string[] } | "throw" = { access: "granted", title: null, attendees: [] };
   controlSeq = 0;
@@ -309,6 +311,17 @@ export class FakeRuntime {
           ended: events.filter((event) => event.type === "ended").map((event) => ({ appKey: event.appKey, label: event.label })),
           error: null,
         };
+      }
+      case "voices.learn": {
+        this.voiceLearnCalls.push({ meetingId: args.meetingId as string, speakerKey: args.speakerKey as string, name: args.name as string });
+        return { learned: true, reason: null, seconds: 42 };
+      }
+      case "voices.list":
+        return { voices: this.voices };
+      case "voices.forget": {
+        const before = this.voices.length;
+        this.voices = this.voices.filter((voice) => voice.name !== args.name);
+        return { forgotten: this.voices.length < before };
       }
       case "local.calendarEvent": {
         if (this.calendarLookup === "throw") throw new Error("calendar lookup failed");

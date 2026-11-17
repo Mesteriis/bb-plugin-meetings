@@ -14,6 +14,7 @@ function macSettings() {
     localGraceSec: 60,
     localOwnerName: "Я",
     localCalendarTitles: true,
+    voiceRecognition: true,
     localEngine: "whisper",
     localLanguage: "ru",
     localGlossary: "",
@@ -175,6 +176,38 @@ describe("local recording auto-record", () => {
       await loaded.service.tick();
       expect(loaded.fake.ensureCalls.map((call) => ({ mode: call.mode }))).toEqual(expected);
     }
+  });
+
+  it("remembers the voice of a speaker the owner names, unless voice recognition is off or the name is cleared", async () => {
+    const cases = [
+      { setting: true, name: "Анна", expected: [{ speakerKey: "spk:1", name: "Анна" }] },
+      { setting: true, name: "", expected: [] },
+      { setting: false, name: "Анна", expected: [] },
+    ] as const;
+    for (const { setting, name, expected } of cases) {
+      const loaded = await load({ settings: { ...macSettings(), voiceRecognition: setting }, now: () => T0 });
+      loaded.fake.env = envReport({ platform: "darwin", arch: "arm64" });
+      loaded.fake.localPollResult = { supported: true, detected: [], started: [started("zoom", "Zoom")], ended: [], error: null };
+      await loaded.service.pollLocalDetection();
+      const id = loaded.service.list("all", 50, null).meetings[0]!.id;
+      // The transcript's speakers, as a finished recording has them.
+      (loaded.service as unknown as { repo: { updateMeeting(id: string, patch: object): unknown } }).repo.updateMeeting(id, {
+        speakers: [{ key: "spk:1", label: "Спикер 1", source: "acoustic", talkSec: 40, segments: 9 }],
+      });
+      loaded.service.renameSpeaker(id, "spk:1", name);
+      await loaded.service.voicesSettled();
+      expect(loaded.fake.voiceLearnCalls).toEqual(expected.map((call) => ({ meetingId: id, ...call })));
+    }
+  });
+
+  it("passes the voice recognition setting to the transcriber and lists and forgets voices", async () => {
+    const loaded = await load({ settings: { ...macSettings(), voiceRecognition: false }, now: () => T0 });
+    expect(loaded.service.transcriberConfig({ ...macSettings(), voiceRecognition: false, diarization: "ui+acoustic", speakerLagMs: 700, keepRawAudio: false } as never, null)).toEqual({
+      gigaamUrl: null, diarization: "ui+acoustic", speakerLagMs: 700, keepRawAudio: false, threads: 0, recognizeVoices: false,
+    });
+    loaded.fake.voices = [{ name: "Анна", seconds: 42, meetings: 1, updatedAt: 5 }];
+    expect(await loaded.service.listVoices()).toEqual([{ name: "Анна", seconds: 42, meetings: 1, updatedAt: 5 }]);
+    expect(await loaded.service.forgetVoice("Анна")).toEqual([]);
   });
 
   it("names a local recording after the calendar event it belongs to", async () => {

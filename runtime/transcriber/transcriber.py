@@ -1145,6 +1145,63 @@ def cluster_anchored(X, durations, threshold=ANCHOR_THRESHOLD):
     return np.array([order[int(lab)] for lab in nearest], dtype=int)
 
 
+VOICE_MATCH_THRESHOLD = 0.6  # a cluster this similar to a known voice is that person
+VOICE_MATCH_MARGIN = 0.1  # ...and this much closer to it than to any other known voice
+VOICE_MIN_S = 10.0  # a cluster with less speech than this is not matched
+
+
+def load_voices(path):
+    """Known voices from <hostData>/voices.json as [(name, unit embedding)];
+    empty when the file is absent or unreadable. The host writes it when the
+    owner names a speaker (src/host/voices.ts)."""
+    data = read_json(path) if path else None
+    voices = []
+    for entry in (data or {}).get("voices", []) if isinstance(data, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        emb = decode_embedding(entry.get("embedding"))
+        if isinstance(name, str) and name.strip() and emb is not None:
+            voices.append((name.strip(), emb))
+    return voices
+
+
+def cluster_centroids(X, durations, labels):
+    """{cluster: (unit centroid weighted by piece duration, seconds of speech)}."""
+    X = np.asarray(X, dtype=np.float32)
+    w = np.asarray(durations, dtype=np.float32)
+    labels = np.asarray(labels)
+    out = {}
+    for c in sorted(set(int(v) for v in labels)):
+        rows = labels == c
+        out[c] = (unit((X[rows] * w[rows][:, None]).sum(axis=0)), float(w[rows].sum()))
+    return out
+
+
+def match_voices(centroids, voices, threshold=VOICE_MATCH_THRESHOLD, margin=VOICE_MATCH_MARGIN):
+    """{cluster: name} for the clusters that are a known voice. A cluster is
+    matched when it has enough speech, is similar enough to one voice and clearly
+    closer to it than to the next one; a voice names only its closest cluster.
+    A wrong name is worse than "Спикер 3", so every doubt leaves the cluster unnamed."""
+    if not voices:
+        return {}
+    V = np.stack([v for _, v in voices])
+    best = {}
+    for c, (centroid, seconds) in centroids.items():
+        if seconds < VOICE_MIN_S:
+            continue
+        sims = V @ centroid
+        order = np.argsort(-sims)
+        top = float(sims[order[0]])
+        second = float(sims[order[1]]) if len(order) > 1 else -1.0
+        if top < threshold or top - second < margin:
+            continue
+        k = int(order[0])
+        if k not in best or top > best[k][1]:
+            best[k] = (c, top)
+    return {c: voices[k][0] for k, (c, _) in best.items()}
+
+
 def local_final_mode(effective):
     """How a local recording's final speakers are decided. The microphone gives
     the owner the way the meeting UI names a speaker for a bot, so voice-only
@@ -1159,12 +1216,15 @@ def ui_speaker(name):
     return f"ui:{name}", name, "ui"
 
 
-def decide_speakers(segments, coverages, own_clusters, mode):
+def decide_speakers(segments, coverages, own_clusters, mode, voice_names=None):
     """Final (speakerKey, speaker, source) per segment (DESIGN §5).
 
     segments: [{start, end}] in time order; coverages: [{name: share}];
-    own_clusters: cluster id per segment, None when it has no embedding.
+    own_clusters: cluster id per segment, None when it has no embedding;
+    voice_names: {cluster: name} of clusters recognized as a known voice; it
+    names a cluster only where it would otherwise be "Спикер N".
     """
+    voice_names = voice_names or {}
     n = len(segments)
     dom = [top_speaker(c) for c in coverages]
     # Pieces without an embedding inherit the previous piece's cluster (or the first one).
@@ -1194,6 +1254,8 @@ def decide_speakers(segments, coverages, own_clusters, mode):
     numbers = {}
 
     def acoustic(c):
+        if c in voice_names:
+            return f"voice:{voice_names[c]}", voice_names[c], "voice"
         if c not in numbers:
             numbers[c] = len(numbers) + 1
         k = numbers[c]
@@ -1366,6 +1428,8 @@ class Transcriber:
         self.diarization = tr.get("diarization") if tr.get("diarization") in DIARIZATION_MODES else "ui+acoustic"
         self.lag_ms = int(tr["speakerLagMs"]) if is_number(tr.get("speakerLagMs")) else DEFAULT_SPEAKER_LAG_MS
         self.keep_raw = tr.get("keepRawAudio") is True
+        # Name clusters after the voices the owner has named before (absent = on).
+        self.recognize_voices = tr.get("recognizeVoices") is not False
         threads = args.threads if args.threads is not None else tr.get("threads")
         self.workers = int(threads) if is_number(threads) and threads > 0 else default_workers()
         primary_url = args.gigaam_url or tr.get("gigaamUrl")
@@ -1883,6 +1947,7 @@ class Transcriber:
             coverages = [ui_coverage(timeline, self.rec_start, s["start"], s["end"]) for s in segments]
         mode = local_final_mode(self.effective_diarization) if self.platform == "local" else self.effective_diarization
         own_clusters = [None] * len(segments)
+        voice_names = {}
         if mode != "ui":
             embs = load_embeddings(self.paths["embeddings"], self.next_id)
             idx = [i for i, s in enumerate(segments) if s["id"] in embs]
@@ -1896,9 +1961,14 @@ class Transcriber:
                 for i, lab in zip(idx, labels):
                     own_clusters[i] = int(lab)
                 log(f"clustering: {len(idx)} embeddings -> {int(labels.max()) + 1} cluster(s) at {threshold}")
+                if self.recognize_voices and self.host_data:
+                    voice_names = match_voices(cluster_centroids(X, durations, labels),
+                                               load_voices(os.path.join(self.host_data, "voices.json")))
+                    if voice_names:
+                        log(f"recognized voices: {', '.join(sorted(voice_names.values()))}")
             elif mode == "acoustic":
                 log("no speaker embeddings: all speakers unknown")
-        decisions = decide_speakers(segments, coverages, own_clusters, mode)
+        decisions = decide_speakers(segments, coverages, own_clusters, mode, voice_names)
         final = []
         for s, (key, label, source) in zip(segments, decisions):
             final.append({"id": s["id"], "start": s["start"], "end": s["end"], "speakerKey": key,

@@ -9,6 +9,7 @@ import { useMeetingsRpc } from "./rpc";
 import type { MeetingsNav } from "./route";
 import { TemplatesPanel } from "./templates-panel";
 import { ErrorText, Notice, Spinner } from "./ui";
+import { VoicesPanel } from "./voices-panel";
 import { ZoomAccountCard } from "./zoom-card";
 
 export type SettingsValues = Record<string, string | number | boolean | null | undefined>;
@@ -79,6 +80,13 @@ function SettingsContent({ nav }: { nav: MeetingsNav }) {
         {text("chatAnnouncement", "Сообщение в чат после подключения", "Пусто — не отправлять сообщение")}
         <div className="grid gap-3 sm:grid-cols-2"><Field label="Разделение по спикерам"><select className={fieldClass} value={String(value("diarization") ?? "ui+acoustic")} onChange={event => update("diarization", event.target.value)}><option value="ui+acoustic">Интерфейс и голоса</option><option value="ui">Интерфейс встречи</option><option value="acoustic">По голосам</option></select></Field>{number("speakerLagMs", "Задержка индикатора спикера, мс", 0, 5000)}{text("gigaamUrl", "Сервер распознавания", "Пусто — GigaAM этого BB")}{text("chromePath", "Путь к Chrome", "Пусто — определить автоматически")}</div>
         <details><summary className="cursor-pointer text-xs text-muted-foreground">Календарь и расширенные настройки</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{boolean("calendarAutoJoin", "Автоматически входить по календарю")}{number("calendarLeadMinutes", "Входить заранее, мин", 0, 30)}{number("calendarOvertimeMinutes", "Задержаться после события, мин", 0, 600)}{number("calendarSyncMinutes", "Синхронизация календаря, мин", 1, 120)}{text("calendarFilter", "Фильтр событий")}{text("calendarIcsUrls", "Ссылки ICS", "Новые секретные ссылки через пробел; пусто сохраняет текущие", true)}{text("speakerSelectors", "Селекторы спикеров (JSON)")}</div></details>
+        <details>
+          <summary className="cursor-pointer text-xs text-muted-foreground">Голоса говорящих</summary>
+          <div className="mt-3 space-y-3">
+            {boolean("voiceRecognition", "Узнавать говорящих по голосу")}
+            <VoicesPanel />
+          </div>
+        </details>
         <details open={value("localRecordingEnabled") === true}>
           <summary className="cursor-pointer text-xs text-muted-foreground">Локальная запись (macOS, без бота)</summary>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">

@@ -323,6 +323,30 @@ export const hostContract = defineRpcContract({
       })
       .strict(),
   },
+  "voices.learn": {
+    experimental_description: "Remember the voice of a speaker the owner has named in a finished meeting.",
+    input: z.object({ meetingId: meetingIdSchema, speakerKey: z.string().min(1).max(300), name: z.string().min(1).max(100) }).strict(),
+    output: z
+      .object({
+        learned: z.boolean(),
+        /** Why not: the speaker has no embedded speech in this meeting, or less than 10 s. */
+        reason: z.enum(["no_voice", "too_short"]).nullable(),
+        seconds: z.number(),
+      })
+      .strict(),
+  },
+  "voices.list": {
+    experimental_description: "Known voices, without their embeddings.",
+    input: z.object({}).strict(),
+    output: z
+      .object({ voices: z.array(z.object({ name: z.string(), seconds: z.number(), meetings: z.number(), updatedAt: z.number() }).strict()) })
+      .strict(),
+  },
+  "voices.forget": {
+    experimental_description: "Delete a known voice by name.",
+    input: z.object({ name: z.string().min(1).max(100) }).strict(),
+    output: z.object({ forgotten: z.boolean() }).strict(),
+  },
   "local.calendarEvent": {
     experimental_description:
       "The macOS system calendar event a call in this app at this time belongs to, for naming a local recording.",
