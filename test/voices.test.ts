@@ -155,6 +155,13 @@ describe("learnVoice, listVoices, forgetVoice", () => {
     expect(await retractVoice(paths, { meetingId, speakerKey: "spk:1" }, 4)).toBe(false);
   });
 
+  it("does not learn a voice from the unknown speaker, which mixes several people", async () => {
+    const paths = hostPaths(root);
+    await fs.writeFile(path.join(paths.meetings, meetingId, "transcript.json"), JSON.stringify({ segments: [{ id: 0, start: 0, end: 12, speakerKey: "unknown" }] }));
+    expect(await learnVoice(paths, { meetingId, speakerKey: "unknown", name: "Анна" }, 1)).toEqual({ learned: false, reason: "no_voice", seconds: 0 });
+    expect(await listVoices(paths)).toEqual([]);
+  });
+
   it("forgets a voice by name", async () => {
     const paths = hostPaths(root);
     await learnVoice(paths, { meetingId, speakerKey: "spk:1", name: "Анна" }, 5000);
